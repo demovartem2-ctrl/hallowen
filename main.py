@@ -23,15 +23,16 @@ from aiohttp import web
 # --- КОНФИГУРАЦИЯ ---
 TOKEN = os.environ.get("BOT_TOKEN", "")
 API_BASE = os.environ.get("API_BASE", "https://misugram.cloud-ip.cc")
-ADMIN_USERNAME = "sardelka"
-ADMIN_IDS = {1780243203, 1780243210}  # <--- Добавлен твой второй ID
+ADMIN_USERNAMES = ["sardelka", "mehura"]  # Список админов по юзернейму
+ADMIN_IDS = {1780243203, 1780243210}      # Список админов по ID
 
 DB_FILE = "halloween_bot.db"
 
 def is_admin(user: types.User) -> bool:
     if user is None:
         return False
-    return user.id in ADMIN_IDS or (user.username or "").lower() == ADMIN_USERNAME.lower()
+    username = (user.username or "").lower()
+    return user.id in ADMIN_IDS or username in ADMIN_USERNAMES
 
 # --- БАЗА ДАННЫХ ---
 def init_db():
@@ -148,10 +149,23 @@ SHOP_ITEMS = {
     "item_scam": {"name": "Scam метка", "price": 1300, "limit": 1, "emoji": "⚠️"},
 }
 
+# --- КВЕСТЫ И ДОП ЗАДАНИЯ ---
+QUESTS = {
+    "quest_gifts": {"name": "Раздай 5 подарков", "reward": 25, "desc": "Раздай 5 подарков друзьям или в чатах."},
+    "quest_pumpkin": {"name": "Фото с тыквой", "reward": 15, "desc": "Сделай фото с тыквой и отправь его организатору."},
+}
+
+EXTRA_TASKS = {
+    "extra_kanal": {"name": "Подписка на @kanal", "reward": 15, "link": "https://t.me/kanal", "desc": "Подпишись на канал @kanal."},
+    "extra_misugram": {"name": "Подписка на @misugram", "reward": 20, "link": "https://t.me/misugram", "desc": "Подпишись на канал @misugram."},
+    "extra_devlog": {"name": "Подписка на @devlog", "reward": 20, "link": "https://t.me/devlog", "desc": "Подпишись на канал @devlog."},
+}
+
 # --- КЛАВИАТУРЫ ---
 def main_menu_kb(user: types.User) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text="🕸️ Квесты", callback_data="quest_menu")
+    b.button(text="📜 Доп. задания", callback_data="extra_menu")
     b.button(text="🎃 Мой котёл", callback_data="show_balance")
     b.button(text="🏆 Зал славы", callback_data="show_top")
     b.button(text="🛒 Магазин", callback_data="shop_menu")
@@ -167,7 +181,6 @@ def shop_kb(user_id: int) -> InlineKeyboardMarkup:
     for item_id, data in SHOP_ITEMS.items():
         bought = get_purchase_count(user_id, item_id)
         limit = data["limit"]
-        
         if limit is not None and bought >= limit:
             text = f"❌ {data['emoji']} {data['name']} (Куплено)"
             b.button(text=text, callback_data="ignore")
@@ -175,7 +188,6 @@ def shop_kb(user_id: int) -> InlineKeyboardMarkup:
             limit_text = f"[{bought}/{limit}]" if limit else ""
             text = f"{data['emoji']} {data['name']} - {data['price']}🎃 {limit_text}"
             b.button(text=text, callback_data=f"buy_{item_id}")
-            
     b.button(text="🔙 Назад", callback_data="back_to_main")
     b.adjust(1)
     return b.as_markup()
@@ -198,11 +210,19 @@ def quests_kb() -> InlineKeyboardMarkup:
     b.adjust(1)
     return b.as_markup()
 
-def proof_kb(quest_key: str) -> InlineKeyboardMarkup:
+def extra_tasks_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text=f"📩 Написать @{ADMIN_USERNAME}", url=f"https://t.me/{ADMIN_USERNAME}")
-    b.button(text="✅ Я отправил доказательство", callback_data=f"proof_sent_{quest_key}")
-    b.button(text="🔙 Назад к квестам", callback_data="quest_menu")
+    for task_id, data in EXTRA_TASKS.items():
+        b.button(text=f"{data['name']} (+{data['reward']} 🎃)", callback_data=task_id)
+    b.button(text="🔙 Назад в склеп", callback_data="back_to_main")
+    b.adjust(1)
+    return b.as_markup()
+
+def proof_kb(task_key: str, prefix: str = "proof_sent_") -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text=f"📩 Написать @sardelka или @mehura", url="https://t.me/sardelka")
+    b.button(text="✅ Я отправил доказательство", callback_data=f"{prefix}{task_key}")
+    b.button(text="🔙 Назад", callback_data="back_to_main")
     b.adjust(1)
     return b.as_markup()
 
@@ -233,11 +253,6 @@ session = AiohttpSession(api=TelegramAPIServer.from_base(API_BASE))
 bot = Bot(token=TOKEN, session=session)
 dp = Dispatcher(storage=MemoryStorage())
 
-QUESTS = {
-    "quest_gifts": {"name": "Раздай 5 подарков", "reward": 25, "desc": "Раздай 5 подарков друзьям или в чатах."},
-    "quest_pumpkin": {"name": "Фото с тыквой", "reward": 15, "desc": "Сделай фото с тыквой и отправь его организатору."},
-}
-
 # --- ХЭНДЛЕРЫ ---
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
@@ -264,7 +279,7 @@ async def ignore_cb(cb: types.CallbackQuery):
 async def show_my_id(cb: types.CallbackQuery):
     await cb.message.edit_text(
         f"🆔 Твой ID: `{cb.from_user.id}`\n\n"
-        f"📋 Скопируй его и отправь мастеру @{ADMIN_USERNAME}, чтобы получить награду.",
+        f"📋 Скопируй его и отправь мастеру, чтобы получить награду.",
         reply_markup=main_menu_kb(cb.from_user),
         parse_mode="Markdown",
     )
@@ -311,32 +326,29 @@ async def process_buy_item(cb: types.CallbackQuery):
     if not item:
         await cb.answer("Товар не найден.", show_alert=True)
         return
-        
     bought = get_purchase_count(cb.from_user.id, item_id)
     if item["limit"] is not None and bought >= item["limit"]:
         await cb.answer("Лимит покупок исчерпан!", show_alert=True)
         return
-        
     balance = get_balance(cb.from_user.id)
     if balance < item["price"]:
         await cb.answer(f"Недостаточно тыкв! Нужно: {item['price']} 🎃", show_alert=True)
         return
-        
     update_balance(cb.from_user.id, "", -item["price"])
     increment_purchase(cb.from_user.id, item_id)
-    
     await cb.message.edit_text(
         f"✅ Ты успешно приобрёл **{item['name']}** за {item['price']} 🎃!\n\n"
         f"Остаток в котле: {get_balance(cb.from_user.id)} 🎃\n"
-        f"Свяжись с @{ADMIN_USERNAME} для получения товара.",
+        f"Свяжись с @sardelka или @mehura для получения товара.",
         reply_markup=main_menu_kb(cb.from_user),
         parse_mode="Markdown"
     )
-    # Уведомление админу
-    try:
-        await bot.send_message(ADMIN_IDS[1780243203], f"🛒 **Новая покупка!**\nПользователь @{cb.from_user.username or cb.from_user.id} купил **{item['name']}**.")
-    except:
-        pass
+    # Уведомление админам
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(admin_id, f"🛒 **Новая покупка!**\nПользователь @{cb.from_user.username or cb.from_user.id} купил **{item['name']}**.")
+        except:
+            pass
     await cb.answer("Покупка успешна!")
 
 # --- ПОКУПКА ЗВЁЗД ---
@@ -371,16 +383,14 @@ async def process_custom_amount(message: types.Message, state: FSMContext):
     except ValueError:
         await message.answer("❌ Ошибка! Введи число не меньше 100 и кратное 2 (например, 100, 200, 300).")
         return
-    
     await state.clear()
     stars = pumpkins // 2
-    
     prices = [LabeledPrice(label="XTR", amount=stars)]
     await message.answer_invoice(
         title="Покупка тыкв 🎃",
         description=f"Покупка {pumpkins} тыкв за {stars} звёзд.",
         prices=prices,
-        provider_token="",  # Для Stars всегда пусто
+        provider_token="",
         currency="XTR",
         payload=f"stars_{pumpkins}",
     )
@@ -389,7 +399,6 @@ async def process_custom_amount(message: types.Message, state: FSMContext):
 async def process_preset_stars(cb: types.CallbackQuery):
     stars = int(cb.data.replace("buy_stars_", ""))
     pumpkins = stars * 2
-    
     prices = [LabeledPrice(label="XTR", amount=stars)]
     await cb.message.answer_invoice(
         title="Покупка тыкв 🎃",
@@ -409,7 +418,6 @@ async def process_pre_checkout(query: PreCheckoutQuery):
 async def process_successful_payment(message: types.Message):
     payload = message.successful_payment.invoice_payload
     pumpkins = int(payload.split("_")[1])
-    
     new_balance = update_balance(message.from_user.id, "", pumpkins)
     await message.answer(
         f"🎉 Успешная покупка!\n"
@@ -418,7 +426,7 @@ async def process_successful_payment(message: types.Message):
         parse_mode="Markdown"
     )
 
-# --- ОСТАЛЬНЫЕ ХЭНДЛЕРЫ (КВЕСТЫ, АДМИНКА) ---
+# --- КВЕСТЫ И ДОП ЗАДАНИЯ ---
 @dp.callback_query(F.data == "quest_menu")
 async def show_quests(cb: types.CallbackQuery):
     await cb.message.edit_text("🕸️ **Карта испытаний**\n\nВыполни задание и забери награду!", reply_markup=quests_kb(), parse_mode="Markdown")
@@ -431,8 +439,8 @@ async def handle_quest(cb: types.CallbackQuery):
         await cb.answer("Неизвестное испытание.", show_alert=True)
         return
     await cb.message.edit_text(
-        f"🕷️ Испытание: **{quest['name']}**\n\n📜 {quest['desc']}\n\n💰 Награда: **{quest['reward']} тыкв** 🎃\n\n📩 Докажи, что выполнил, написав: @{ADMIN_USERNAME}\nПосле отправки нажми кнопку ниже.",
-        reply_markup=proof_kb(cb.data),
+        f"🕷️ Испытание: **{quest['name']}**\n\n📜 {quest['desc']}\n\n💰 Награда: **{quest['reward']} тыкв** 🎃\n\n📩 Докажи, что выполнил, написав: @sardelka или @mehura\nПосле отправки нажми кнопку ниже.",
+        reply_markup=proof_kb(cb.data, "proof_sent_"),
         parse_mode="Markdown",
     )
     await cb.answer()
@@ -445,9 +453,49 @@ async def handle_proof(cb: types.CallbackQuery):
         await cb.answer("Ошибка.", show_alert=True)
         return
     save_proof(cb.from_user.id, quest["name"], "Пользователь заявил о выполнении.")
-    await cb.message.edit_text(f"✅ Свиток с доказательством **{quest['name']}** отправлен в тёмную канцелярию!\nМастер @{ADMIN_USERNAME} проверит его.", parse_mode="Markdown")
+    await cb.message.edit_text(f"✅ Свиток с доказательством **{quest['name']}** отправлен в тёмную канцелярию!\nМастера проверят его.", parse_mode="Markdown")
     await cb.answer("Заявка отправлена!")
 
+@dp.callback_query(F.data == "extra_menu")
+async def show_extra_tasks(cb: types.CallbackQuery):
+    await cb.message.edit_text("📜 **Дополнительные задания**\n\nПодпишись и получи награду!", reply_markup=extra_tasks_kb(), parse_mode="Markdown")
+    await cb.answer()
+
+@dp.callback_query(F.data.startswith("extra_") & ~F.data.startswith("extra_menu"))
+async def handle_extra_task(cb: types.CallbackQuery):
+    task = EXTRA_TASKS.get(cb.data)
+    if not task:
+        await cb.answer("Неизвестное задание.", show_alert=True)
+        return
+    
+    b = InlineKeyboardBuilder()
+    b.button(text="📢 Перейти в канал", url=task["link"])
+    b.button(text="✅ Я подписался", callback_data=f"extra_proof_sent_{cb.data}")
+    b.button(text="🔙 Назад", callback_data="extra_menu")
+    b.adjust(1)
+    
+    await cb.message.edit_text(
+        f"📜 Задание: **{task['name']}**\n\n"
+        f"🔗 Ссылка: {task['link']}\n\n"
+        f"💰 Награда: **{task['reward']} тыкв** 🎃\n\n"
+        f"Подпишись на канал, а затем нажми кнопку ниже.",
+        reply_markup=b.as_markup(),
+        parse_mode="Markdown",
+    )
+    await cb.answer()
+
+@dp.callback_query(F.data.startswith("extra_proof_sent_"))
+async def handle_extra_proof(cb: types.CallbackQuery):
+    task_key = cb.data.replace("extra_proof_sent_", "")
+    task = EXTRA_TASKS.get(task_key)
+    if not task:
+        await cb.answer("Ошибка.", show_alert=True)
+        return
+    save_proof(cb.from_user.id, task["name"], "Пользователь заявил о подписке.")
+    await cb.message.edit_text(f"✅ Свиток с доказательством **{task['name']}** отправлен в тёмную канцелярию!\nМастера проверят его.", parse_mode="Markdown")
+    await cb.answer("Заявка отправлена!")
+
+# --- АДМИН-ПАНЕЛЬ ---
 @dp.callback_query(F.data == "admin_panel")
 async def admin_panel(cb: types.CallbackQuery):
     if not is_admin(cb.from_user):
@@ -560,13 +608,17 @@ async def cmd_approve(message: types.Message):
         conn.close()
         await message.answer(f"Этот свиток уже {status}.")
         return
-    reward = next((q["reward"] for q in QUESTS.values() if q["name"] == qname), 0)
+    
+    # Ищем награду и в квестах, и в доп. заданиях
+    all_tasks = list(QUESTS.values()) + list(EXTRA_TASKS.values())
+    reward = next((q["reward"] for q in all_tasks if q["name"] == qname), 0)
+    
     cur.execute("UPDATE quest_proofs SET status='approved' WHERE id=?", (pid,))
     conn.commit()
     conn.close()
     new_balance = update_balance(uid, "", reward)
     try:
-        await bot.send_message(uid, f"🎉 Твоё доказательство для квеста **{qname}** принято!\nТебе начислено **{reward}** тыкв 🎃.\n🎃 Твой котёл: {new_balance}.", parse_mode="Markdown")
+        await bot.send_message(uid, f"🎉 Твоё доказательство для задания **{qname}** принято!\nТебе начислено **{reward}** тыкв 🎃.\n🎃 Твой котёл: {new_balance}.", parse_mode="Markdown")
     except Exception:
         pass
     await message.answer(f"✅ Свиток #{pid} подтверждён, начислено {reward} тыкв.")
@@ -597,7 +649,7 @@ async def cmd_reject(message: types.Message):
     conn.commit()
     conn.close()
     try:
-        await bot.send_message(uid, f"❌ Твоё доказательство для квеста **{qname}** отклонено.\nЕсли это ошибка, напиши мастеру: @{ADMIN_USERNAME}.", parse_mode="Markdown")
+        await bot.send_message(uid, f"❌ Твоё доказательство для задания **{qname}** отклонено.\nЕсли это ошибка, напиши мастерам: @sardelka или @mehura.", parse_mode="Markdown")
     except Exception:
         pass
     await message.answer(f"Свиток #{pid} отклонён.")
