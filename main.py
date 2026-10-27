@@ -126,6 +126,7 @@ def main_menu_kb(user: types.User) -> InlineKeyboardMarkup:
     b.button(text="🕸️ Квесты", callback_data="quest_menu")
     b.button(text="🎃 Мой котёл", callback_data="show_balance")
     b.button(text="🏆 Зал славы", callback_data="show_top")
+    b.button(text="🆔 Мой ID", callback_data="show_my_id")  # <--- НОВАЯ КНОПКА
     if is_admin(user):
         b.button(text="💀 Панель мастера", callback_data="admin_panel")
     b.adjust(2)
@@ -201,6 +202,17 @@ async def cmd_start(message: types.Message):
 async def back_to_main(cb: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await cb.message.edit_text("🔮 Главное меню. Тьма ждёт твоего выбора...", reply_markup=main_menu_kb(cb.from_user))
+    await cb.answer()
+
+@dp.callback_query(F.data == "show_my_id")
+async def show_my_id(cb: types.CallbackQuery):
+    await cb.message.edit_text(
+        f"🆔 Твой ID: `{cb.from_user.id}`\n\n"
+        f"📋 Скопируй его (нажми на цифры) и отправь мастеру @{ADMIN_USERNAME}, "
+        f"чтобы он мог выдать тебе награду.",
+        reply_markup=main_menu_kb(cb.from_user),
+        parse_mode="Markdown",
+    )
     await cb.answer()
 
 @dp.callback_query(F.data == "show_balance")
@@ -356,7 +368,7 @@ async def handle_target(message: types.Message, state: FSMContext):
 @dp.message(AdminAmount.amount)
 async def handle_amount(message: types.Message, state: FSMContext):
     try:
-        amount = abs(int(message.text.strip())) # Берем модуль, чтобы админ не парился с минусами
+        amount = abs(int(message.text.strip()))
         if amount == 0:
             raise ValueError
     except (ValueError, AttributeError):
@@ -368,19 +380,15 @@ async def handle_amount(message: types.Message, state: FSMContext):
     action = data.get("action")
     await state.clear()
     
-    # Если отбираем - делаем сумму отрицательной
     final_amount = amount if action == "give" else -amount
-    
     new_balance = update_balance(target, "", final_amount)
     
-    # Ответ админу
     action_text = "Выдано" if action == "give" else "Отобрано"
     await message.answer(
         f"✅ {action_text} **{amount}** 🎃 у `{target}`.\nТеперь у него: **{new_balance}** тыкв.",
         parse_mode="Markdown",
     )
     
-    # Уведомление пользователю
     try:
         if action == "give":
             user_text = f"🪄 Мастер смилостивился над тобой!\nТебе начислено **{amount}** тыкв 🎃.\n\n🎃 Твой баланс: **{new_balance}**."
