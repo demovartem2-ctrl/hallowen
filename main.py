@@ -9,7 +9,12 @@ from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import InlineKeyboardMarkup
+from aiogram.types import (
+    InlineKeyboardMarkup, 
+    LabeledPrice, 
+    PreCheckoutQuery, 
+    SuccessfulPayment
+)
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
@@ -19,7 +24,7 @@ from aiohttp import web
 TOKEN = os.environ.get("BOT_TOKEN", "")
 API_BASE = os.environ.get("API_BASE", "https://misugram.cloud-ip.cc")
 ADMIN_USERNAME = "sardelka"
-ADMIN_IDS = {1780243203}  # твой ID в клиенте
+ADMIN_IDS = {1780243203, 1780243210}  # <--- Добавлен твой второй ID
 
 DB_FILE = "halloween_bot.db"
 
@@ -49,6 +54,14 @@ def init_db():
             created_at TEXT
         )
     """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS user_purchases (
+            user_id INTEGER,
+            item_id TEXT,
+            count INTEGER DEFAULT 0,
+            PRIMARY KEY (user_id, item_id)
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -68,16 +81,10 @@ def update_balance(user_id: int, username: str, amount: int) -> int:
     if row:
         new_balance = row[0] + amount
         uname = username or row[1]
-        cur.execute(
-            "UPDATE users SET balance = ?, username = ? WHERE user_id = ?",
-            (new_balance, uname, user_id),
-        )
+        cur.execute("UPDATE users SET balance = ?, username = ? WHERE user_id = ?", (new_balance, uname, user_id))
     else:
         new_balance = amount
-        cur.execute(
-            "INSERT INTO users (user_id, username, balance) VALUES (?, ?, ?)",
-            (user_id, username, new_balance),
-        )
+        cur.execute("INSERT INTO users (user_id, username, balance) VALUES (?, ?, ?)", (user_id, username, new_balance))
     conn.commit()
     conn.close()
     return new_balance
@@ -95,10 +102,7 @@ def save_proof(user_id: int, quest_name: str, proof_text: str):
 def get_top(limit: int = 10):
     conn = sqlite3.connect(DB_FILE)
     cur = conn.cursor()
-    cur.execute(
-        "SELECT user_id, username, balance FROM users WHERE balance > 0 ORDER BY balance DESC LIMIT ?",
-        (limit,),
-    )
+    cur.execute("SELECT user_id, username, balance FROM users WHERE balance > 0 ORDER BY balance DESC LIMIT ?", (limit,))
     rows = cur.fetchall()
     conn.close()
     return rows
@@ -106,19 +110,43 @@ def get_top(limit: int = 10):
 def get_pending(limit: int = 20):
     conn = sqlite3.connect(DB_FILE)
     cur = conn.cursor()
-    cur.execute(
-        "SELECT id, user_id, quest_name, created_at FROM quest_proofs "
-        "WHERE status='pending' ORDER BY id DESC LIMIT ?",
-        (limit,),
-    )
+    cur.execute("SELECT id, user_id, quest_name, created_at FROM quest_proofs WHERE status='pending' ORDER BY id DESC LIMIT ?", (limit,))
     rows = cur.fetchall()
     conn.close()
     return rows
+
+def get_purchase_count(user_id: int, item_id: str) -> int:
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    cur.execute("SELECT count FROM user_purchases WHERE user_id = ? AND item_id = ?", (user_id, item_id))
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else 0
+
+def increment_purchase(user_id: int, item_id: str):
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    cur.execute("INSERT INTO user_purchases (user_id, item_id, count) VALUES (?, ?, 1) ON CONFLICT(user_id, item_id) DO UPDATE SET count = count + 1", (user_id, item_id))
+    conn.commit()
+    conn.close()
 
 # --- СОСТОЯНИЯ (FSM) ---
 class AdminAmount(StatesGroup):
     target_id = State()
     amount = State()
+
+class BuyStars(StatesGroup):
+    custom_amount = State()
+
+# --- МАГАЗИН ---
+SHOP_ITEMS = {
+    "item_3blacks": {"name": "3 блека", "price": 650, "limit": 2, "emoji": "🖤"},
+    "item_10000": {"name": "10000", "price": 550, "limit": 5, "emoji": "🔢"},
+    "item_100": {"name": "100", "price": 50, "limit": None, "emoji": "💯"},
+    "item_nft_user": {"name": "Нфт юз", "price": 800, "limit": 1, "emoji": "🖼️"},
+    "item_nft_num": {"name": "Номер Nft", "price": 900, "limit": 1, "emoji": "🔢🖼️"},
+    "item_scam": {"name": "Scam метка", "price": 1300, "limit": 1, "emoji": "⚠️"},
+}
 
 # --- КЛАВИАТУРЫ ---
 def main_menu_kb(user: types.User) -> InlineKeyboardMarkup:
@@ -126,10 +154,40 @@ def main_menu_kb(user: types.User) -> InlineKeyboardMarkup:
     b.button(text="🕸️ Квесты", callback_data="quest_menu")
     b.button(text="🎃 Мой котёл", callback_data="show_balance")
     b.button(text="🏆 Зал славы", callback_data="show_top")
-    b.button(text="🆔 Мой ID", callback_data="show_my_id")  # <--- НОВАЯ КНОПКА
+    b.button(text="🛒 Магазин", callback_data="shop_menu")
+    b.button(text="💎 Купить тыквы", callback_data="buy_stars_menu")
+    b.button(text="🆔 Мой ID", callback_data="show_my_id")
     if is_admin(user):
         b.button(text="💀 Панель мастера", callback_data="admin_panel")
     b.adjust(2)
+    return b.as_markup()
+
+def shop_kb(user_id: int) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    for item_id, data in SHOP_ITEMS.items():
+        bought = get_purchase_count(user_id, item_id)
+        limit = data["limit"]
+        
+        if limit is not None and bought >= limit:
+            text = f"❌ {data['emoji']} {data['name']} (Куплено)"
+            b.button(text=text, callback_data="ignore")
+        else:
+            limit_text = f"[{bought}/{limit}]" if limit else ""
+            text = f"{data['emoji']} {data['name']} - {data['price']}🎃 {limit_text}"
+            b.button(text=text, callback_data=f"buy_{item_id}")
+            
+    b.button(text="🔙 Назад", callback_data="back_to_main")
+    b.adjust(1)
+    return b.as_markup()
+
+def buy_stars_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="50 ⭐ (100 🎃)", callback_data="buy_stars_50")
+    b.button(text="150 ⭐ (300 🎃)", callback_data="buy_stars_150")
+    b.button(text="500 ⭐ (1000 🎃)", callback_data="buy_stars_500")
+    b.button(text="✍️ Своя сумма", callback_data="buy_stars_custom")
+    b.button(text="🔙 Назад", callback_data="back_to_main")
+    b.adjust(1)
     return b.as_markup()
 
 def quests_kb() -> InlineKeyboardMarkup:
@@ -163,6 +221,12 @@ def cancel_kb() -> InlineKeyboardMarkup:
     b.adjust(1)
     return b.as_markup()
 
+def cancel_stars_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="❌ Отмена", callback_data="buy_stars_menu")
+    b.adjust(1)
+    return b.as_markup()
+
 # --- БОТ ---
 logging.basicConfig(level=logging.INFO)
 session = AiohttpSession(api=TelegramAPIServer.from_base(API_BASE))
@@ -170,26 +234,14 @@ bot = Bot(token=TOKEN, session=session)
 dp = Dispatcher(storage=MemoryStorage())
 
 QUESTS = {
-    "quest_gifts": {
-        "name": "Раздай 5 подарков",
-        "reward": 25,
-        "desc": "Раздай 5 подарков друзьям или в чатах.",
-    },
-    "quest_pumpkin": {
-        "name": "Фото с тыквой",
-        "reward": 15,
-        "desc": "Сделай фото с тыквой и отправь его организатору.",
-    },
+    "quest_gifts": {"name": "Раздай 5 подарков", "reward": 25, "desc": "Раздай 5 подарков друзьям или в чатах."},
+    "quest_pumpkin": {"name": "Фото с тыквой", "reward": 15, "desc": "Сделай фото с тыквой и отправь его организатору."},
 }
 
 # --- ХЭНДЛЕРЫ ---
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
-    update_balance(
-        message.from_user.id,
-        message.from_user.username or message.from_user.full_name,
-        0,
-    )
+    update_balance(message.from_user.id, message.from_user.username or message.from_user.full_name, 0)
     await message.answer(
         f"🦇 Приветствую, {message.from_user.first_name}! 🕸️\n\n"
         f"Тьма сгущается, Хэллоуин уже близко... 🎃\n"
@@ -204,12 +256,15 @@ async def back_to_main(cb: types.CallbackQuery, state: FSMContext):
     await cb.message.edit_text("🔮 Главное меню. Тьма ждёт твоего выбора...", reply_markup=main_menu_kb(cb.from_user))
     await cb.answer()
 
+@dp.callback_query(F.data == "ignore")
+async def ignore_cb(cb: types.CallbackQuery):
+    await cb.answer("Лимит покупок исчерпан!", show_alert=True)
+
 @dp.callback_query(F.data == "show_my_id")
 async def show_my_id(cb: types.CallbackQuery):
     await cb.message.edit_text(
         f"🆔 Твой ID: `{cb.from_user.id}`\n\n"
-        f"📋 Скопируй его (нажми на цифры) и отправь мастеру @{ADMIN_USERNAME}, "
-        f"чтобы он мог выдать тебе награду.",
+        f"📋 Скопируй его и отправь мастеру @{ADMIN_USERNAME}, чтобы получить награду.",
         reply_markup=main_menu_kb(cb.from_user),
         parse_mode="Markdown",
     )
@@ -236,18 +291,137 @@ async def show_top(cb: types.CallbackQuery):
         for i, (uid, uname, bal) in enumerate(rows):
             name = f"@{uname}" if uname else f"id {uid}"
             text += f"{medals[i]} {name} — {bal} 🎃\n"
+    await cb.message.edit_text(text, reply_markup=main_menu_kb(cb.from_user), parse_mode="Markdown")
+    await cb.answer()
+
+# --- МАГАЗИН ---
+@dp.callback_query(F.data == "shop_menu")
+async def show_shop(cb: types.CallbackQuery):
     await cb.message.edit_text(
-        text, reply_markup=main_menu_kb(cb.from_user), parse_mode="Markdown"
+        "🛒 **Тёмный магазин**\n\nВыбирай товар, смертный. Но помни: у всего есть своя цена...",
+        reply_markup=shop_kb(cb.from_user.id),
+        parse_mode="Markdown",
     )
     await cb.answer()
 
-@dp.callback_query(F.data == "quest_menu")
-async def show_quests(cb: types.CallbackQuery):
+@dp.callback_query(F.data.startswith("buy_item_"))
+async def process_buy_item(cb: types.CallbackQuery):
+    item_id = cb.data.replace("buy_", "")
+    item = SHOP_ITEMS.get(item_id)
+    if not item:
+        await cb.answer("Товар не найден.", show_alert=True)
+        return
+        
+    bought = get_purchase_count(cb.from_user.id, item_id)
+    if item["limit"] is not None and bought >= item["limit"]:
+        await cb.answer("Лимит покупок исчерпан!", show_alert=True)
+        return
+        
+    balance = get_balance(cb.from_user.id)
+    if balance < item["price"]:
+        await cb.answer(f"Недостаточно тыкв! Нужно: {item['price']} 🎃", show_alert=True)
+        return
+        
+    update_balance(cb.from_user.id, "", -item["price"])
+    increment_purchase(cb.from_user.id, item_id)
+    
     await cb.message.edit_text(
-        "🕸️ **Карта испытаний**\n\nВыполни задание и забери свою награду!",
-        reply_markup=quests_kb(),
+        f"✅ Ты успешно приобрёл **{item['name']}** за {item['price']} 🎃!\n\n"
+        f"Остаток в котле: {get_balance(cb.from_user.id)} 🎃\n"
+        f"Свяжись с @{ADMIN_USERNAME} для получения товара.",
+        reply_markup=main_menu_kb(cb.from_user),
+        parse_mode="Markdown"
+    )
+    # Уведомление админу
+    try:
+        await bot.send_message(ADMIN_IDS[1780243203], f"🛒 **Новая покупка!**\nПользователь @{cb.from_user.username or cb.from_user.id} купил **{item['name']}**.")
+    except:
+        pass
+    await cb.answer("Покупка успешна!")
+
+# --- ПОКУПКА ЗВЁЗД ---
+@dp.callback_query(F.data == "buy_stars_menu")
+async def show_buy_stars(cb: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await cb.message.edit_text(
+        "💎 **Обмен звёзд на тыквы**\n\n"
+        "Курс: 1 ⭐ = 2 🎃\n"
+        "Минимальная покупка: 100 🎃 (50 ⭐)\n\n"
+        "Выбери пакет:",
+        reply_markup=buy_stars_kb(),
         parse_mode="Markdown",
     )
+    await cb.answer()
+
+@dp.callback_query(F.data == "buy_stars_custom")
+async def buy_stars_custom(cb: types.CallbackQuery, state: FSMContext):
+    await state.set_state(BuyStars.custom_amount)
+    await cb.message.edit_text(
+        "✍️ Напиши, сколько тыкв ты хочешь купить (число должно быть кратно 2 и не меньше 100):",
+        reply_markup=cancel_stars_kb(),
+    )
+    await cb.answer()
+
+@dp.message(BuyStars.custom_amount)
+async def process_custom_amount(message: types.Message, state: FSMContext):
+    try:
+        pumpkins = int(message.text.strip())
+        if pumpkins < 100 or pumpkins % 2 != 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Ошибка! Введи число не меньше 100 и кратное 2 (например, 100, 200, 300).")
+        return
+    
+    await state.clear()
+    stars = pumpkins // 2
+    
+    prices = [LabeledPrice(label="XTR", amount=stars)]
+    await message.answer_invoice(
+        title="Покупка тыкв 🎃",
+        description=f"Покупка {pumpkins} тыкв за {stars} звёзд.",
+        prices=prices,
+        provider_token="",  # Для Stars всегда пусто
+        currency="XTR",
+        payload=f"stars_{pumpkins}",
+    )
+
+@dp.callback_query(F.data.startswith("buy_stars_") & ~F.data.startswith("buy_stars_custom") & ~F.data.startswith("buy_stars_menu"))
+async def process_preset_stars(cb: types.CallbackQuery):
+    stars = int(cb.data.replace("buy_stars_", ""))
+    pumpkins = stars * 2
+    
+    prices = [LabeledPrice(label="XTR", amount=stars)]
+    await cb.message.answer_invoice(
+        title="Покупка тыкв 🎃",
+        description=f"Покупка {pumpkins} тыкв за {stars} звёзд.",
+        prices=prices,
+        provider_token="",
+        currency="XTR",
+        payload=f"stars_{pumpkins}",
+    )
+    await cb.answer()
+
+@dp.pre_checkout_query()
+async def process_pre_checkout(query: PreCheckoutQuery):
+    await query.answer(ok=True)
+
+@dp.message(F.successful_payment)
+async def process_successful_payment(message: types.Message):
+    payload = message.successful_payment.invoice_payload
+    pumpkins = int(payload.split("_")[1])
+    
+    new_balance = update_balance(message.from_user.id, "", pumpkins)
+    await message.answer(
+        f"🎉 Успешная покупка!\n"
+        f"Тебе начислено **{pumpkins}** 🎃.\n\n"
+        f"Твой баланс: **{new_balance}** 🎃.",
+        parse_mode="Markdown"
+    )
+
+# --- ОСТАЛЬНЫЕ ХЭНДЛЕРЫ (КВЕСТЫ, АДМИНКА) ---
+@dp.callback_query(F.data == "quest_menu")
+async def show_quests(cb: types.CallbackQuery):
+    await cb.message.edit_text("🕸️ **Карта испытаний**\n\nВыполни задание и забери награду!", reply_markup=quests_kb(), parse_mode="Markdown")
     await cb.answer()
 
 @dp.callback_query(F.data.startswith("quest_") & ~F.data.startswith("quest_menu"))
@@ -257,11 +431,7 @@ async def handle_quest(cb: types.CallbackQuery):
         await cb.answer("Неизвестное испытание.", show_alert=True)
         return
     await cb.message.edit_text(
-        f"🕷️ Испытание: **{quest['name']}**\n\n"
-        f"📜 {quest['desc']}\n\n"
-        f"💰 Награда: **{quest['reward']} тыкв** 🎃\n\n"
-        f"📩 Докажи, что выполнил, написав: @{ADMIN_USERNAME}\n"
-        f"После отправки нажми кнопку ниже.",
+        f"🕷️ Испытание: **{quest['name']}**\n\n📜 {quest['desc']}\n\n💰 Награда: **{quest['reward']} тыкв** 🎃\n\n📩 Докажи, что выполнил, написав: @{ADMIN_USERNAME}\nПосле отправки нажми кнопку ниже.",
         reply_markup=proof_kb(cb.data),
         parse_mode="Markdown",
     )
@@ -275,24 +445,15 @@ async def handle_proof(cb: types.CallbackQuery):
         await cb.answer("Ошибка.", show_alert=True)
         return
     save_proof(cb.from_user.id, quest["name"], "Пользователь заявил о выполнении.")
-    await cb.message.edit_text(
-        f"✅ Свиток с доказательством **{quest['name']}** отправлен в тёмную канцелярию!\n"
-        f"Мастер @{ADMIN_USERNAME} проверит его.",
-        parse_mode="Markdown",
-    )
+    await cb.message.edit_text(f"✅ Свиток с доказательством **{quest['name']}** отправлен в тёмную канцелярию!\nМастер @{ADMIN_USERNAME} проверит его.", parse_mode="Markdown")
     await cb.answer("Заявка отправлена!")
 
-# --- АДМИН-ПАНЕЛЬ ---
 @dp.callback_query(F.data == "admin_panel")
 async def admin_panel(cb: types.CallbackQuery):
     if not is_admin(cb.from_user):
         await cb.answer("Тьма не пускает тебя сюда.", show_alert=True)
         return
-    await cb.message.edit_text(
-        "💀 **Панель Мастера**\n\nРаспоряжайся тыквами и проверяй свитки:",
-        reply_markup=admin_kb(),
-        parse_mode="Markdown"
-    )
+    await cb.message.edit_text("💀 **Панель Мастера**\n\nРаспоряжайся тыквами и проверяй свитки:", reply_markup=admin_kb(), parse_mode="Markdown")
     await cb.answer()
 
 @dp.callback_query(F.data == "admin_pending")
@@ -318,11 +479,7 @@ async def admin_give_start(cb: types.CallbackQuery, state: FSMContext):
         return
     await state.update_data(action="give")
     await state.set_state(AdminAmount.target_id)
-    await cb.message.edit_text(
-        "🪄 **Выдача тыкв**\n\nВведи **ID жертвы**, которой нужно дать тыквы:",
-        parse_mode="Markdown",
-        reply_markup=cancel_kb(),
-    )
+    await cb.message.edit_text("🪄 **Выдача тыкв**\n\nВведи **ID жертвы**, которой нужно дать тыквы:", parse_mode="Markdown", reply_markup=cancel_kb())
     await cb.answer()
 
 @dp.callback_query(F.data == "admin_take")
@@ -332,11 +489,7 @@ async def admin_take_start(cb: types.CallbackQuery, state: FSMContext):
         return
     await state.update_data(action="take")
     await state.set_state(AdminAmount.target_id)
-    await cb.message.edit_text(
-        "🪓 **Изъятие тыкв**\n\nВведи **ID грешника**, у которого нужно отобрать тыквы:",
-        parse_mode="Markdown",
-        reply_markup=cancel_kb(),
-    )
+    await cb.message.edit_text("🪓 **Изъятие тыкв**\n\nВведи **ID грешника**, у которого нужно отобрать тыквы:", parse_mode="Markdown", reply_markup=cancel_kb())
     await cb.answer()
 
 @dp.callback_query(F.data == "admin_cancel")
@@ -353,17 +506,11 @@ async def handle_target(message: types.Message, state: FSMContext):
         await message.answer("Нужен числовой ID. Попробуй ещё раз.")
         return
     await state.update_data(target=target)
-    
     data = await state.get_data()
     action = data.get("action")
     verb = "выдать" if action == "give" else "отобрать"
-    
     await state.set_state(AdminAmount.amount)
-    await message.answer(
-        f"Сколько тыкв {verb} у пользователя `{target}`?",
-        parse_mode="Markdown",
-        reply_markup=cancel_kb(),
-    )
+    await message.answer(f"Сколько тыкв {verb} у пользователя `{target}`?", parse_mode="Markdown", reply_markup=cancel_kb())
 
 @dp.message(AdminAmount.amount)
 async def handle_amount(message: types.Message, state: FSMContext):
@@ -374,58 +521,22 @@ async def handle_amount(message: types.Message, state: FSMContext):
     except (ValueError, AttributeError):
         await message.answer("Нужно целое число (не 0).")
         return
-    
     data = await state.get_data()
     target = data["target"]
     action = data.get("action")
     await state.clear()
-    
     final_amount = amount if action == "give" else -amount
     new_balance = update_balance(target, "", final_amount)
-    
     action_text = "Выдано" if action == "give" else "Отобрано"
-    await message.answer(
-        f"✅ {action_text} **{amount}** 🎃 у `{target}`.\nТеперь у него: **{new_balance}** тыкв.",
-        parse_mode="Markdown",
-    )
-    
+    await message.answer(f"✅ {action_text} **{amount}** 🎃 у `{target}`.\nТеперь у него: **{new_balance}** тыкв.", parse_mode="Markdown")
     try:
         if action == "give":
             user_text = f"🪄 Мастер смилостивился над тобой!\nТебе начислено **{amount}** тыкв 🎃.\n\n🎃 Твой баланс: **{new_balance}**."
         else:
             user_text = f"🪓 Тьма покарала тебя!\nУ тебя изъято **{amount}** тыкв 🎃.\n\n🎃 Твой баланс: **{new_balance}**."
-            
         await bot.send_message(target, user_text, parse_mode="Markdown")
     except Exception as e:
         logging.warning(f"Не смог уведомить {target}: {e}")
-
-# --- КОМАНДЫ МОДЕРАЦИИ ---
-@dp.message(F.text == "/top")
-async def cmd_top(message: types.Message):
-    rows = get_top(10)
-    if not rows:
-        await message.answer("Топ пуст.")
-        return
-    medals = ["🥇", "🥈", "🥉"] + ["💀"] * 20
-    text = "🏆 **Зал славы Хэллоуина** 🦇\n\n"
-    for i, (uid, uname, bal) in enumerate(rows):
-        name = f"@{uname}" if uname else f"id {uid}"
-        text += f"{medals[i]} {name} — {bal} 🎃\n"
-    await message.answer(text, parse_mode="Markdown")
-
-@dp.message(F.text == "/pending")
-async def cmd_pending(message: types.Message):
-    if not is_admin(message.from_user):
-        return
-    rows = get_pending(30)
-    if not rows:
-        await message.answer("Нет свитков в ожидании.")
-        return
-    text = "📜 **Свитки на проверку:**\n\n"
-    for pid, uid, qname, ts in rows:
-        text += f"🔸 #{pid} · user_id={uid} · {qname}\n"
-    text += "\n/approve <id> или /reject <id>"
-    await message.answer(text, parse_mode="Markdown")
 
 @dp.message(F.text.startswith("/approve "))
 async def cmd_approve(message: types.Message):
@@ -455,13 +566,7 @@ async def cmd_approve(message: types.Message):
     conn.close()
     new_balance = update_balance(uid, "", reward)
     try:
-        await bot.send_message(
-            uid,
-            f"🎉 Твоё доказательство для квеста **{qname}** принято!\n"
-            f"Тебе начислено **{reward}** тыкв 🎃.\n"
-            f"🎃 Твой котёл: {new_balance}.",
-            parse_mode="Markdown",
-        )
+        await bot.send_message(uid, f"🎉 Твоё доказательство для квеста **{qname}** принято!\nТебе начислено **{reward}** тыкв 🎃.\n🎃 Твой котёл: {new_balance}.", parse_mode="Markdown")
     except Exception:
         pass
     await message.answer(f"✅ Свиток #{pid} подтверждён, начислено {reward} тыкв.")
@@ -492,12 +597,7 @@ async def cmd_reject(message: types.Message):
     conn.commit()
     conn.close()
     try:
-        await bot.send_message(
-            uid,
-            f"❌ Твоё доказательство для квеста **{qname}** отклонено.\n"
-            f"Если это ошибка, напиши мастеру: @{ADMIN_USERNAME}.",
-            parse_mode="Markdown",
-        )
+        await bot.send_message(uid, f"❌ Твоё доказательство для квеста **{qname}** отклонено.\nЕсли это ошибка, напиши мастеру: @{ADMIN_USERNAME}.", parse_mode="Markdown")
     except Exception:
         pass
     await message.answer(f"Свиток #{pid} отклонён.")
