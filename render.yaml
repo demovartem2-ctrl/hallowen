@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: halloween-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    plan: free
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: API_BASE
+        value: https://misugram.cloud-ip.cc
