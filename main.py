@@ -3,7 +3,9 @@ import logging
 import os
 import sqlite3
 import random
+import math
 from datetime import datetime, timedelta
+from typing import Optional
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart
@@ -25,14 +27,21 @@ from aiohttp import web
 TOKEN = os.environ.get("BOT_TOKEN", "")
 API_BASE = os.environ.get("API_BASE", "https://misugram.cloud-ip.cc")
 ADMIN_USERNAME = "sardelka"
-ADMIN_IDS = {1780243203, 1780243210}
+DEFAULT_ADMINS = {1780243203, 1780243210}  # Эти ID получат админку при первом запуске
 
 DB_FILE = "halloween_bot.db"
 
 def is_admin(user: types.User) -> bool:
     if user is None:
         return False
-    return user.id in ADMIN_IDS or (user.username or "").lower() == ADMIN_USERNAME.lower()
+    if (user.username or "").lower() == ADMIN_USERNAME.lower():
+        return True
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM admins WHERE user_id = ?", (user.id,))
+    row = cur.fetchone()
+    conn.close()
+    return bool(row)
 
 # --- БАЗА ДАННЫХ ---
 def init_db():
@@ -76,6 +85,15 @@ def init_db():
             completed_at TEXT
         )
     """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS admins (
+            user_id INTEGER PRIMARY KEY
+        )
+    """)
+    # Добавляем дефолтных админов
+    for admin_id in DEFAULT_ADMINS:
+        cur.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (admin_id,))
+    
     conn.commit()
     conn.close()
 
@@ -159,7 +177,23 @@ def set_setting(key, value):
     conn.commit()
     conn.close()
 
-# --- ПУЛ КВЕСТОВ (пока 3 штуки, как просил) ---
+def find_user_id(identifier: str) -> Optional[int]:
+    """Ищет ID пользователя по числу или @username в БД."""
+    identifier = identifier.strip()
+    if identifier.isdigit():
+        return int(identifier)
+    if identifier.startswith("@"):
+        uname = identifier[1:].lower()
+        conn = sqlite3.connect(DB_FILE)
+        cur = conn.cursor()
+        cur.execute("SELECT user_id FROM users WHERE LOWER(username) = ?", (uname,))
+        row = cur.fetchone()
+        conn.close()
+        if row:
+            return row[0]
+    return None
+
+# --- ПУЛ КВЕСТОВ ---
 QUEST_POOL = {
     "q1": {"name": "Раздай 5 подарков", "reward": 25, "desc": "Раздай 5 подарков друзьям или в чатах."},
     "q2": {"name": "Фото с тыквой", "reward": 15, "desc": "Сделай фото с тыквой и отправь его организатору."},
@@ -167,7 +201,6 @@ QUEST_POOL = {
 }
 
 def check_and_rotate_quests():
-    """Проверяет время и обновляет активные квесты раз в 12 часов."""
     now = datetime.now()
     last_str = get_setting("last_rotation")
     active_str = get_setting("active_quests")
@@ -177,10 +210,9 @@ def check_and_rotate_quests():
         if now - last_time < timedelta(hours=12):
             return active_str.split(",")
     
-    # Время вышло (или первый запуск) - обновляем
     keys = list(QUEST_POOL.keys())
     random.shuffle(keys)
-    active = keys[:3]  # Выбираем 3 случайных квеста (сейчас их всего 3, так что выберет все)
+    active = keys[:3]
     
     set_setting("last_rotation", now.isoformat())
     set_setting("active_quests", ",".join(active))
@@ -191,8 +223,15 @@ class AdminAmount(StatesGroup):
     target_id = State()
     amount = State()
 
+class GrantAdmin(StatesGroup):
+    target_id = State()
+
 class BuyStars(StatesGroup):
     custom_amount = State()
+
+class TransferPumpkins(StatesGroup):
+    target = State()
+    amount = State()
 
 # --- МАГАЗИН ---
 SHOP_ITEMS = {
@@ -210,6 +249,7 @@ def main_menu_kb(user: types.User) -> InlineKeyboardMarkup:
     b.button(text="🏆 Зал славы", callback_data="show_top")
     b.button(text="🛒 Магазин", callback_data="shop_menu")
     b.button(text="💎 Купить тыквы", callback_data="buy_stars_menu")
+    b.button(text="💸 Перевод", callback_data="transfer_start")
     b.button(text="🆔 Мой ID", callback_data="show_my_id")
     if is_admin(user):
         b.button(text="💀 Панель мастера", callback_data="admin_panel")
@@ -236,9 +276,9 @@ def shop_kb(user_id: int) -> InlineKeyboardMarkup:
 
 def buy_stars_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="100 🎃 (300 ⭐)", callback_data="buy_stars_100")
-    b.button(text="250 🎃 (750 ⭐)", callback_data="buy_stars_250")
-    b.button(text="500 🎃 (1500 ⭐)", callback_data="buy_stars_500")
+    b.button(text="100 🎃 (1750 ⭐)", callback_data="buy_stars_100")
+    b.button(text="250 🎃 (4375 ⭐)", callback_data="buy_stars_250")
+    b.button(text="500 🎃 (8750 ⭐)", callback_data="buy_stars_500")
     b.button(text="✍️ Своя сумма", callback_data="buy_stars_custom")
     b.button(text="🔙 Назад", callback_data="back_to_main")
     b.adjust(1)
@@ -280,6 +320,7 @@ def admin_kb() -> InlineKeyboardMarkup:
     b.button(text="🪄 Выдать тыквы", callback_data="admin_give")
     b.button(text="🪓 Отобрать тыквы", callback_data="admin_take")
     b.button(text="📜 Свитки (заявки)", callback_data="admin_pending")
+    b.button(text="👑 Выдать админку", callback_data="admin_grant")
     b.button(text="🔙 В главное меню", callback_data="back_to_main")
     b.adjust(1)
     return b.as_markup()
@@ -293,6 +334,12 @@ def cancel_kb() -> InlineKeyboardMarkup:
 def cancel_stars_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text="❌ Отмена", callback_data="buy_stars_menu")
+    b.adjust(1)
+    return b.as_markup()
+
+def cancel_transfer_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="❌ Отмена", callback_data="back_to_main")
     b.adjust(1)
     return b.as_markup()
 
@@ -358,6 +405,89 @@ async def show_top(cb: types.CallbackQuery):
     await cb.message.edit_text(text, reply_markup=main_menu_kb(cb.from_user), parse_mode="Markdown")
     await cb.answer()
 
+# --- ПЕРЕВОД ТЫКВ ---
+@dp.callback_query(F.data == "transfer_start")
+async def transfer_start(cb: types.CallbackQuery, state: FSMContext):
+    await state.set_state(TransferPumpkins.target)
+    await cb.message.edit_text(
+        "💸 **Перевод тыкв**\n\n"
+        "Введи **ID** или **@username** получателя:",
+        reply_markup=cancel_transfer_kb(),
+        parse_mode="Markdown"
+    )
+    await cb.answer()
+
+@dp.message(TransferPumpkins.target)
+async def transfer_target(message: types.Message, state: FSMContext):
+    target_id = find_user_id(message.text)
+    if not target_id:
+        await message.answer("❌ Пользователь не найден в базе бота. Попроси его зайти в бота (`/start`), или введи его ID.")
+        return
+    
+    if target_id == message.from_user.id:
+        await message.answer("❌ Нельзя перевести тыквы самому себе.")
+        return
+
+    # Проверяем, существует ли получатель в базе
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM users WHERE user_id = ?", (target_id,))
+    exists = cur.fetchone()
+    conn.close()
+    if not exists:
+        await message.answer("❌ Этот пользователь еще не запускал бота. Попроси его нажать `/start`.")
+        return
+
+    await state.update_data(target=target_id)
+    await state.set_state(TransferPumpkins.amount)
+    await message.answer(
+        f"Сколько тыкв 🎃 перевести пользователю `{target_id}`?",
+        parse_mode="Markdown",
+        reply_markup=cancel_transfer_kb()
+    )
+
+@dp.message(TransferPumpkins.amount)
+async def transfer_amount(message: types.Message, state: FSMContext):
+    try:
+        amount = int(message.text.strip())
+        if amount <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("Нужно целое число больше 0.")
+        return
+    
+    data = await state.get_data()
+    target_id = data["target"]
+    await state.clear()
+    
+    sender_balance = get_balance(message.from_user.id)
+    if sender_balance < amount:
+        await message.answer(f"❌ Недостаточно тыкв! У тебя только {sender_balance} 🎃.")
+        return
+
+    # Списание и начисление
+    update_balance(message.from_user.id, "", -amount)
+    new_target_balance = update_balance(target_id, "", amount)
+    
+    # Уведомление отправителю
+    await message.answer(
+        f"✅ Ты перевел **{amount}** 🎃 пользователю `{target_id}`.\n"
+        f"Твой баланс: **{get_balance(message.from_user.id)}** 🎃.",
+        reply_markup=main_menu_kb(message.from_user),
+        parse_mode="Markdown"
+    )
+    
+    # Уведомление получателю
+    try:
+        await bot.send_message(
+            target_id,
+            f"🎁 Тебе перевели **{amount}** тыкв 🎃 от `{message.from_user.id}`!\n\n"
+            f"🎃 Твой баланс: **{new_target_balance}**.",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logging.warning(f"Не смог уведомить {target_id}: {e}")
+
 # --- МАГАЗИН ---
 @dp.callback_query(F.data == "shop_menu")
 async def show_shop(cb: types.CallbackQuery):
@@ -402,14 +532,14 @@ async def process_buy_item(cb: types.CallbackQuery):
         pass
     await cb.answer("Покупка успешна!")
 
-# --- ПОКУПКА ЗВЁЗД (1 тыква = 3 звезды) ---
+# --- ПОКУПКА ЗВЁЗД ---
 @dp.callback_query(F.data == "buy_stars_menu")
 async def show_buy_stars(cb: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await cb.message.edit_text(
         "💎 **Обмен звёзд на тыквы**\n\n"
-        "Курс: 1 🎃 = 3 ⭐\n"
-        "Минимальная покупка: 100 🎃 (300 ⭐)\n\n"
+        "Курс: 1 🎃 = 17.5 ⭐\n"
+        "Минимальная покупка: 100 🎃 (1750 ⭐)\n\n"
         "Выбери пакет:",
         reply_markup=buy_stars_kb(),
         parse_mode="Markdown",
@@ -436,7 +566,7 @@ async def process_custom_amount(message: types.Message, state: FSMContext):
         return
     
     await state.clear()
-    stars = pumpkins * 3
+    stars = math.ceil(pumpkins * 17.5)
     
     prices = [LabeledPrice(label="XTR", amount=stars)]
     await message.answer_invoice(
@@ -451,7 +581,7 @@ async def process_custom_amount(message: types.Message, state: FSMContext):
 @dp.callback_query(F.data.startswith("buy_stars_") & ~F.data.startswith("buy_stars_custom") & ~F.data.startswith("buy_stars_menu"))
 async def process_preset_stars(cb: types.CallbackQuery):
     pumpkins = int(cb.data.replace("buy_stars_", ""))
-    stars = pumpkins * 3
+    stars = math.ceil(pumpkins * 17.5)
     
     prices = [LabeledPrice(label="XTR", amount=stars)]
     await cb.message.answer_invoice(
@@ -559,6 +689,49 @@ async def admin_pending(cb: types.CallbackQuery):
         text += "\nДля подтверждения: `/approve <id>`\nДля отклонения: `/reject <id>`"
     await cb.message.edit_text(text, reply_markup=admin_kb(), parse_mode="Markdown")
     await cb.answer()
+
+@dp.callback_query(F.data == "admin_grant")
+async def admin_grant_start(cb: types.CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user):
+        await cb.answer("Нет доступа.", show_alert=True)
+        return
+    await state.set_state(GrantAdmin.target_id)
+    await cb.message.edit_text(
+        "👑 **Выдача админки**\n\nВведи **ID** или **@username** пользователя, которому нужно дать доступ к панели:",
+        reply_markup=cancel_kb(),
+        parse_mode="Markdown"
+    )
+    await cb.answer()
+
+@dp.message(GrantAdmin.target_id)
+async def admin_grant_target(message: types.Message, state: FSMContext):
+    target_id = find_user_id(message.text)
+    if not target_id:
+        await message.answer("❌ Пользователь не найден. Попроси его зайти в бота (`/start`), или введи его ID.")
+        return
+    
+    await state.clear()
+    
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    cur.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (target_id,))
+    conn.commit()
+    conn.close()
+    
+    await message.answer(
+        f"✅ Пользователь `{target_id}` теперь **Мастер**! 👑\n\n"
+        f"При следующем заходе в бота у него появится кнопка «💀 Панель мастера».",
+        reply_markup=admin_kb(),
+        parse_mode="Markdown"
+    )
+    try:
+        await bot.send_message(
+            target_id,
+            "👑 Тьма избрала тебя!\nТебе выданы права **Мастера**. Перезайди в бота (`/start`), чтобы увидеть панель.",
+            parse_mode="Markdown"
+        )
+    except Exception:
+        pass
 
 @dp.callback_query(F.data == "admin_give")
 async def admin_give_start(cb: types.CallbackQuery, state: FSMContext):
