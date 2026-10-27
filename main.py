@@ -68,7 +68,6 @@ def init_db():
     cur.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
     cur.execute("CREATE TABLE IF NOT EXISTS user_quest_completions (user_id INTEGER, quest_id TEXT, completed_at TEXT)")
     cur.execute("CREATE TABLE IF NOT EXISTS admins (user_id INTEGER PRIMARY KEY)")
-    # Новая таблица для бонусов
     cur.execute("CREATE TABLE IF NOT EXISTS user_bonuses (user_id INTEGER PRIMARY KEY, last_claim TEXT)")
     
     for admin_id in DEFAULT_ADMINS:
@@ -180,8 +179,7 @@ def get_last_bonus(user_id: int) -> Optional[datetime]:
     cur.execute("SELECT last_claim FROM user_bonuses WHERE user_id = ?", (user_id,))
     row = cur.fetchone()
     conn.close()
-    if row:
-        return datetime.fromisoformat(row[0])
+    if row: return datetime.fromisoformat(row[0])
     return None
 
 def set_bonus_claimed(user_id: int):
@@ -256,7 +254,7 @@ def main_menu_kb(user: types.User) -> InlineKeyboardMarkup:
     b.button(text="🛒 Магазин", callback_data="shop_menu")
     b.button(text="💎 Купить тыквы", callback_data="buy_stars_menu")
     b.button(text="💸 Перевод", callback_data="transfer_start")
-    b.button(text="🎁 Бонус", callback_data="daily_bonus")  # Новая кнопка
+    b.button(text="🎁 Бонус", callback_data="daily_bonus")
     b.button(text="🆔 Мой ID", callback_data="show_my_id")
     b.button(text="🆘 Поддержка", callback_data="support_menu")
     if is_admin(user):
@@ -267,6 +265,7 @@ def main_menu_kb(user: types.User) -> InlineKeyboardMarkup:
 def games_menu_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text="🚀 Ракета (x2, x3...)", callback_data="game_rocket")
+    b.button(text="🍬 Сладость или Гадость", callback_data="game_trickortreat") # Новая кнопка
     b.button(text="🔙 Назад в меню", callback_data="back_to_main")
     b.adjust(1)
     return b.as_markup()
@@ -466,21 +465,17 @@ async def claim_daily_bonus(cb: types.CallbackQuery):
     user_id = cb.from_user.id
     now = datetime.now()
     last_claim = get_last_bonus(user_id)
-    
     bonus_amount = 25
     
     if last_claim:
         time_diff = now - last_claim
         if time_diff < timedelta(hours=24):
-            # Кулдаун еще не прошел
             remaining = timedelta(hours=24) - time_diff
             hours, remainder = divmod(remaining.seconds, 3600)
             minutes, _ = divmod(remainder, 60)
-            
             await cb.answer(f"⏳ Следующую порцию тьмы можно получить через {hours} ч. {minutes} мин.", show_alert=True)
             return
 
-    # Выдаем бонус
     new_balance = update_balance(user_id, "", bonus_amount)
     set_bonus_claimed(user_id)
     
@@ -489,12 +484,11 @@ async def claim_daily_bonus(cb: types.CallbackQuery):
         f"Тьма благоволит тебе и дарует **{bonus_amount}** тыкв 🎃.\n\n"
         f"🎃 Твой котёл: **{new_balance}**.\n"
         f"Возвращайся через 24 часа за новой порцией!",
-        reply_markup=main_menu_kb(cb.from_user),
-        parse_mode="Markdown"
+        reply_markup=main_menu_kb(cb.from_user), parse_mode="Markdown"
     )
     await cb.answer("Бонус получен!")
 
-# --- МИНИ-ИГРЫ (РАКЕТА) ---
+# --- МИНИ-ИГРЫ ---
 @dp.callback_query(F.data == "games_menu")
 async def show_games(cb: types.CallbackQuery, state: FSMContext):
     await state.clear()
@@ -504,6 +498,40 @@ async def show_games(cb: types.CallbackQuery, state: FSMContext):
     await cb.message.edit_text("🎮 **Игровой зал**\n\nВыбирай испытание. Тьма любит азартных...", reply_markup=games_menu_kb(), parse_mode="Markdown")
     await cb.answer()
 
+# Игра Сладость или Гадость
+@dp.callback_query(F.data == "game_trickortreat")
+async def trick_or_treat(cb: types.CallbackQuery):
+    user_id = cb.from_user.id
+    balance = get_balance(user_id)
+    
+    if balance < 25:
+        await cb.answer("❌ Для игры нужно минимум 25 тыкв! Тьма не любит нищих.", show_alert=True)
+        return
+        
+    # 50/50
+    if random.random() < 0.5:
+        # Сладость
+        new_balance = update_balance(user_id, "", 25)
+        text = (
+            f"🍬 **Сладость!**\n\n"
+            f"Тьма оказалась благосклонна к тебе.\n"
+            f"Ты получаешь **+25** тыкв 🎃!\n\n"
+            f"🎃 Твой баланс: **{new_balance}**."
+        )
+    else:
+        # Гадость
+        new_balance = update_balance(user_id, "", -25)
+        text = (
+            f"🧟 **Гадость!**\n\n"
+            f"Древнее проклятие настигло тебя.\n"
+            f"У тебя отняли **25** тыкв 🎃!\n\n"
+            f"🎃 Твой баланс: **{new_balance}**."
+        )
+        
+    await cb.message.edit_text(text, reply_markup=games_menu_kb(), parse_mode="Markdown")
+    await cb.answer()
+
+# Игра Ракета
 @dp.callback_query(F.data == "game_rocket")
 async def rocket_menu(cb: types.CallbackQuery):
     await cb.message.edit_text(
