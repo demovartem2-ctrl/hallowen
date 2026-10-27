@@ -27,10 +27,11 @@ from aiohttp import web
 TOKEN = os.environ.get("BOT_TOKEN", "")
 API_BASE = os.environ.get("API_BASE", "https://misugram.cloud-ip.cc")
 ADMIN_USERNAME = "sardelka"
-DEFAULT_ADMINS = {1780243203, 1780243210}
+DEFAULT_ADMINS = {1780243203, 1780243210} # Твои ID
 
 DB_FILE = "halloween_bot.db"
 
+# --- УТИЛИТЫ ---
 def is_admin(user: types.User) -> bool:
     if user is None:
         return False
@@ -53,7 +54,8 @@ def get_all_admins() -> list[int]:
 
 async def notify_admins(text: str):
     """Отправляет уведомление всем администраторам."""
-    for admin_id in get_all_admins():
+    admin_ids = set(get_all_admins()) | DEFAULT_ADMINS
+    for admin_id in admin_ids:
         try:
             await bot.send_message(admin_id, text, parse_mode="Markdown")
         except Exception as e:
@@ -276,9 +278,18 @@ def main_menu_kb(user: types.User) -> InlineKeyboardMarkup:
     b.button(text="💎 Купить тыквы", callback_data="buy_stars_menu")
     b.button(text="💸 Перевод", callback_data="transfer_start")
     b.button(text="🆔 Мой ID", callback_data="show_my_id")
+    b.button(text="🆘 Поддержка", callback_data="support_menu")
     if is_admin(user):
         b.button(text="💀 Панель мастера", callback_data="admin_panel")
     b.adjust(2)
+    return b.as_markup()
+
+def support_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="👻 @sardelka", url="https://t.me/sardelka")
+    b.button(text="👾 @mehura", url="https://t.me/mehura")
+    b.button(text="🔙 Назад", callback_data="back_to_main")
+    b.adjust(1)
     return b.as_markup()
 
 def shop_kb(user_id: int) -> InlineKeyboardMarkup:
@@ -414,6 +425,18 @@ async def show_my_id(cb: types.CallbackQuery):
     )
     await cb.answer()
 
+@dp.callback_query(F.data == "support_menu")
+async def show_support(cb: types.CallbackQuery):
+    await cb.message.edit_text(
+        "🆘 **Служба спасения от нечисти**\n\n"
+        "Если у тебя возникли проблемы, пропали тыквы, не пришел товар или ты просто хочешь задать вопрос — пиши нашим мастерам:\n\n"
+        "👻 @sardelka\n"
+        "👾 @mehura",
+        reply_markup=support_kb(),
+        parse_mode="Markdown"
+    )
+    await cb.answer()
+
 @dp.callback_query(F.data == "show_balance")
 async def show_balance(cb: types.CallbackQuery):
     balance = get_balance(cb.from_user.id)
@@ -517,7 +540,6 @@ async def transfer_amount(message: types.Message, state: FSMContext):
     except Exception as e:
         logging.warning(f"Не смог уведомить {target_id}: {e}")
 
-    # Уведомление админам о переводе
     await notify_admins(
         f"💸 **Новый перевод!**\n"
         f"Пользователь `{message.from_user.id}` (@{message.from_user.username}) перевел **{amount}** 🎃 пользователю `{target_id}`."
@@ -558,12 +580,11 @@ async def process_buy_item(cb: types.CallbackQuery):
     await cb.message.edit_text(
         f"✅ Ты успешно приобрёл **{item['name']}** за {item['price']} 🎃!\n\n"
         f"Остаток в котле: {get_balance(cb.from_user.id)} 🎃\n"
-        f"Свяжись с @{ADMIN_USERNAME} для получения товара.",
+        f"Свяжись с поддержкой для получения товара.",
         reply_markup=main_menu_kb(cb.from_user),
         parse_mode="Markdown"
     )
     
-    # Уведомление всем админам о покупке
     await notify_admins(
         f"🛒 **Новая покупка!**\n"
         f"Пользователь `{cb.from_user.id}` (@{cb.from_user.username}) купил **{item['name']}** за {item['price']} 🎃."
@@ -649,7 +670,6 @@ async def process_successful_payment(message: types.Message):
         parse_mode="Markdown"
     )
     
-    # Уведомление админам
     await notify_admins(
         f"💎 **Покупка звёзд!**\n"
         f"Пользователь `{message.from_user.id}` (@{message.from_user.username}) купил **{pumpkins}** 🎃 за {message.successful_payment.total_amount} ⭐."
@@ -750,7 +770,7 @@ async def admin_all_bals(cb: types.CallbackQuery):
             name = f"@{uname}" if uname else f"ID {uid}"
             text += f"• {name}: **{bal}** 🎃\n"
             count += 1
-            if count >= 50: # Ограничение на длину сообщения
+            if count >= 50:
                 text += "\n*... и другие (показаны первые 50)*"
                 break
                 
@@ -955,7 +975,7 @@ async def cmd_reject(message: types.Message):
     conn.commit()
     conn.close()
     try:
-        await bot.send_message(uid, f"❌ Твоё доказательство для квеста **{qname}** отклонено.\nЕсли это ошибка, напиши мастеру: @{ADMIN_USERNAME}.", parse_mode="Markdown")
+        await bot.send_message(uid, f"❌ Твоё доказательство для квеста **{qname}** отклонено.\nЕсли это ошибка, напиши в поддержку.", parse_mode="Markdown")
     except Exception:
         pass
     await message.answer(f"Свиток #{pid} отклонён.")
