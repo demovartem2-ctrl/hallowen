@@ -28,7 +28,7 @@ def is_admin(user: types.User) -> bool:
         return False
     return user.id in ADMIN_IDS or (user.username or "").lower() == ADMIN_USERNAME.lower()
 
-# --- БАЗА ---
+# --- БАЗА ДАННЫХ ---
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     cur = conn.cursor()
@@ -115,27 +115,27 @@ def get_pending(limit: int = 20):
     conn.close()
     return rows
 
-# --- FSM ---
-class GivePumpkin(StatesGroup):
+# --- СОСТОЯНИЯ (FSM) ---
+class AdminAmount(StatesGroup):
     target_id = State()
     amount = State()
 
 # --- КЛАВИАТУРЫ ---
 def main_menu_kb(user: types.User) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="Квест 🎃", callback_data="quest_menu")
-    b.button(text="Баланс 🎃", callback_data="show_balance")
-    b.button(text="Топ 🎃", callback_data="show_top")
+    b.button(text="🕸️ Квесты", callback_data="quest_menu")
+    b.button(text="🎃 Мой котёл", callback_data="show_balance")
+    b.button(text="🏆 Зал славы", callback_data="show_top")
     if is_admin(user):
-        b.button(text="⚙️ Админ-панель", callback_data="admin_panel")
+        b.button(text="💀 Панель мастера", callback_data="admin_panel")
     b.adjust(2)
     return b.as_markup()
 
 def quests_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="🎁 Раздай 5 подарков (+25 монет)", callback_data="quest_gifts")
-    b.button(text="📸 Фото с тыквой (+15 монет)", callback_data="quest_pumpkin")
-    b.button(text="🔙 В меню", callback_data="back_to_main")
+    b.button(text="🎁 Раздай 5 подарков (+25 тыкв)", callback_data="quest_gifts")
+    b.button(text="📸 Фото с тыквой (+15 тыкв)", callback_data="quest_pumpkin")
+    b.button(text="🔙 Назад в склеп", callback_data="back_to_main")
     b.adjust(1)
     return b.as_markup()
 
@@ -149,9 +149,10 @@ def proof_kb(quest_key: str) -> InlineKeyboardMarkup:
 
 def admin_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="🎃 Выдать тыквы", callback_data="admin_give")
-    b.button(text="📋 Заявки (pending)", callback_data="admin_pending")
-    b.button(text="🔙 В меню", callback_data="back_to_main")
+    b.button(text="🪄 Выдать тыквы", callback_data="admin_give")
+    b.button(text="🪓 Отобрать тыквы", callback_data="admin_take")
+    b.button(text="📜 Свитки (заявки)", callback_data="admin_pending")
+    b.button(text="🔙 В главное меню", callback_data="back_to_main")
     b.adjust(1)
     return b.as_markup()
 
@@ -189,23 +190,24 @@ async def cmd_start(message: types.Message):
         0,
     )
     await message.answer(
-        f"Привет, {message.from_user.first_name}! 👋\n"
-        f"Добро пожаловать в Хэллоуин-бота! 🎃\n\n"
-        f"Зарабатывай тыквы 🎃, выполняя квесты.",
+        f"🦇 Приветствую, {message.from_user.first_name}! 🕸️\n\n"
+        f"Тьма сгущается, Хэллоуин уже близко... 🎃\n"
+        f"Собирай проклятые тыквы, выполняя задания, и стань Королём этого праздника! 👑\n\n"
+        f"Что выберешь, смертный?",
         reply_markup=main_menu_kb(message.from_user),
     )
 
 @dp.callback_query(F.data == "back_to_main")
 async def back_to_main(cb: types.CallbackQuery, state: FSMContext):
     await state.clear()
-    await cb.message.edit_text("Главное меню:", reply_markup=main_menu_kb(cb.from_user))
+    await cb.message.edit_text("🔮 Главное меню. Тьма ждёт твоего выбора...", reply_markup=main_menu_kb(cb.from_user))
     await cb.answer()
 
 @dp.callback_query(F.data == "show_balance")
 async def show_balance(cb: types.CallbackQuery):
     balance = get_balance(cb.from_user.id)
     await cb.message.edit_text(
-        f"🎃 Твой баланс: **{balance}** тыкв.",
+        f"🎃 В твоём котле сейчас: **{balance}** тыкв.\n\n🕷️ Береги их, они очень ценятся в эту ночь...",
         reply_markup=main_menu_kb(cb.from_user),
         parse_mode="Markdown",
     )
@@ -215,10 +217,10 @@ async def show_balance(cb: types.CallbackQuery):
 async def show_top(cb: types.CallbackQuery):
     rows = get_top(10)
     if not rows:
-        text = "Пока никого нет в топе. Стань первым! 🎃"
+        text = "Зал славы пуст. Тьма ещё не выбрала героев... 🕸️"
     else:
-        medals = ["🥇", "🥈", "🥉"] + ["▫️"] * 20
-        text = "🏆 **Топ по тыквам** 🎃\n\n"
+        medals = ["🥇", "🥈", "🥉"] + ["💀"] * 20
+        text = "🏆 **Зал славы Хэллоуина** 🦇\n\n"
         for i, (uid, uname, bal) in enumerate(rows):
             name = f"@{uname}" if uname else f"id {uid}"
             text += f"{medals[i]} {name} — {bal} 🎃\n"
@@ -230,8 +232,9 @@ async def show_top(cb: types.CallbackQuery):
 @dp.callback_query(F.data == "quest_menu")
 async def show_quests(cb: types.CallbackQuery):
     await cb.message.edit_text(
-        "🎃 Доступные квесты:\n\nВыполни задание и получи награду!",
+        "🕸️ **Карта испытаний**\n\nВыполни задание и забери свою награду!",
         reply_markup=quests_kb(),
+        parse_mode="Markdown",
     )
     await cb.answer()
 
@@ -239,13 +242,14 @@ async def show_quests(cb: types.CallbackQuery):
 async def handle_quest(cb: types.CallbackQuery):
     quest = QUESTS.get(cb.data)
     if not quest:
-        await cb.answer("Неизвестный квест.", show_alert=True)
+        await cb.answer("Неизвестное испытание.", show_alert=True)
         return
     await cb.message.edit_text(
-        f"🎃 Квест: **{quest['name']}**\n\n"
-        f"{quest['desc']}\n\n"
-        f"💰 Награда: **{quest['reward']} тыкв**\n\n"
-        f"📩 Доказательство — @{ADMIN_USERNAME}",
+        f"🕷️ Испытание: **{quest['name']}**\n\n"
+        f"📜 {quest['desc']}\n\n"
+        f"💰 Награда: **{quest['reward']} тыкв** 🎃\n\n"
+        f"📩 Докажи, что выполнил, написав: @{ADMIN_USERNAME}\n"
+        f"После отправки нажми кнопку ниже.",
         reply_markup=proof_kb(cb.data),
         parse_mode="Markdown",
     )
@@ -260,8 +264,8 @@ async def handle_proof(cb: types.CallbackQuery):
         return
     save_proof(cb.from_user.id, quest["name"], "Пользователь заявил о выполнении.")
     await cb.message.edit_text(
-        f"✅ Заявка на **{quest['name']}** отправлена!\n"
-        f"Организатор @{ADMIN_USERNAME} проверит её.",
+        f"✅ Свиток с доказательством **{quest['name']}** отправлен в тёмную канцелярию!\n"
+        f"Мастер @{ADMIN_USERNAME} проверит его.",
         parse_mode="Markdown",
     )
     await cb.answer("Заявка отправлена!")
@@ -270,9 +274,13 @@ async def handle_proof(cb: types.CallbackQuery):
 @dp.callback_query(F.data == "admin_panel")
 async def admin_panel(cb: types.CallbackQuery):
     if not is_admin(cb.from_user):
-        await cb.answer("Нет доступа.", show_alert=True)
+        await cb.answer("Тьма не пускает тебя сюда.", show_alert=True)
         return
-    await cb.message.edit_text("⚙️ Админ-панель:", reply_markup=admin_kb())
+    await cb.message.edit_text(
+        "💀 **Панель Мастера**\n\nРаспоряжайся тыквами и проверяй свитки:",
+        reply_markup=admin_kb(),
+        parse_mode="Markdown"
+    )
     await cb.answer()
 
 @dp.callback_query(F.data == "admin_pending")
@@ -282,13 +290,13 @@ async def admin_pending(cb: types.CallbackQuery):
         return
     rows = get_pending(20)
     if not rows:
-        text = "Нет заявок в ожидании."
+        text = "📜 Свитков в ожидании нет. Тишина..."
     else:
-        text = "🎃 Заявки на проверку:\n\n"
+        text = "📜 **Свитки на проверку:**\n\n"
         for pid, uid, qname, ts in rows:
-            text += f"#{pid} · user_id={uid} · {qname}\n"
-        text += "\nКоманды:\n/approve <id>\n/reject <id>"
-    await cb.message.edit_text(text, reply_markup=admin_kb())
+            text += f"🔸 #{pid} · user_id={uid} · {qname}\n"
+        text += "\nДля подтверждения: `/approve <id>`\nДля отклонения: `/reject <id>`"
+    await cb.message.edit_text(text, reply_markup=admin_kb(), parse_mode="Markdown")
     await cb.answer()
 
 @dp.callback_query(F.data == "admin_give")
@@ -296,9 +304,24 @@ async def admin_give_start(cb: types.CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user):
         await cb.answer("Нет доступа.", show_alert=True)
         return
-    await state.set_state(GivePumpkin.target_id)
+    await state.update_data(action="give")
+    await state.set_state(AdminAmount.target_id)
     await cb.message.edit_text(
-        "🎃 Введи **ID пользователя**, которому нужно выдать тыквы:",
+        "🪄 **Выдача тыкв**\n\nВведи **ID жертвы**, которой нужно дать тыквы:",
+        parse_mode="Markdown",
+        reply_markup=cancel_kb(),
+    )
+    await cb.answer()
+
+@dp.callback_query(F.data == "admin_take")
+async def admin_take_start(cb: types.CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user):
+        await cb.answer("Нет доступа.", show_alert=True)
+        return
+    await state.update_data(action="take")
+    await state.set_state(AdminAmount.target_id)
+    await cb.message.edit_text(
+        "🪓 **Изъятие тыкв**\n\nВведи **ID грешника**, у которого нужно отобрать тыквы:",
         parse_mode="Markdown",
         reply_markup=cancel_kb(),
     )
@@ -307,48 +330,64 @@ async def admin_give_start(cb: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "admin_cancel")
 async def admin_cancel(cb: types.CallbackQuery, state: FSMContext):
     await state.clear()
-    await cb.message.edit_text("⚙️ Админ-панель:", reply_markup=admin_kb())
+    await cb.message.edit_text("💀 Панель Мастера:", reply_markup=admin_kb())
     await cb.answer("Отменено")
 
-@dp.message(GivePumpkin.target_id)
-async def give_target(message: types.Message, state: FSMContext):
+@dp.message(AdminAmount.target_id)
+async def handle_target(message: types.Message, state: FSMContext):
     try:
         target = int(message.text.strip())
     except (ValueError, AttributeError):
         await message.answer("Нужен числовой ID. Попробуй ещё раз.")
         return
     await state.update_data(target=target)
-    await state.set_state(GivePumpkin.amount)
+    
+    data = await state.get_data()
+    action = data.get("action")
+    verb = "выдать" if action == "give" else "отобрать"
+    
+    await state.set_state(AdminAmount.amount)
     await message.answer(
-        f"Сколько тыкв 🎃 выдать пользователю `{target}`?",
+        f"Сколько тыкв {verb} у пользователя `{target}`?",
         parse_mode="Markdown",
         reply_markup=cancel_kb(),
     )
 
-@dp.message(GivePumpkin.amount)
-async def give_amount(message: types.Message, state: FSMContext):
+@dp.message(AdminAmount.amount)
+async def handle_amount(message: types.Message, state: FSMContext):
     try:
-        amount = int(message.text.strip())
+        amount = abs(int(message.text.strip())) # Берем модуль, чтобы админ не парился с минусами
         if amount == 0:
             raise ValueError
     except (ValueError, AttributeError):
         await message.answer("Нужно целое число (не 0).")
         return
+    
     data = await state.get_data()
     target = data["target"]
+    action = data.get("action")
     await state.clear()
-    new_balance = update_balance(target, "", amount)
+    
+    # Если отбираем - делаем сумму отрицательной
+    final_amount = amount if action == "give" else -amount
+    
+    new_balance = update_balance(target, "", final_amount)
+    
+    # Ответ админу
+    action_text = "Выдано" if action == "give" else "Отобрано"
     await message.answer(
-        f"✅ Выдано **{amount}** 🎃 пользователю `{target}`.\nЕго баланс: **{new_balance}**.",
+        f"✅ {action_text} **{amount}** 🎃 у `{target}`.\nТеперь у него: **{new_balance}** тыкв.",
         parse_mode="Markdown",
     )
+    
+    # Уведомление пользователю
     try:
-        sign = "начислено" if amount > 0 else "списано"
-        await bot.send_message(
-            target,
-            f"🎃 Тебе {sign} **{abs(amount)}** тыкв!\nБаланс: **{new_balance}**.",
-            parse_mode="Markdown",
-        )
+        if action == "give":
+            user_text = f"🪄 Мастер смилостивился над тобой!\nТебе начислено **{amount}** тыкв 🎃.\n\n🎃 Твой баланс: **{new_balance}**."
+        else:
+            user_text = f"🪓 Тьма покарала тебя!\nУ тебя изъято **{amount}** тыкв 🎃.\n\n🎃 Твой баланс: **{new_balance}**."
+            
+        await bot.send_message(target, user_text, parse_mode="Markdown")
     except Exception as e:
         logging.warning(f"Не смог уведомить {target}: {e}")
 
@@ -359,8 +398,8 @@ async def cmd_top(message: types.Message):
     if not rows:
         await message.answer("Топ пуст.")
         return
-    medals = ["🥇", "🥈", "🥉"] + ["▫️"] * 20
-    text = "🏆 **Топ по тыквам** 🎃\n\n"
+    medals = ["🥇", "🥈", "🥉"] + ["💀"] * 20
+    text = "🏆 **Зал славы Хэллоуина** 🦇\n\n"
     for i, (uid, uname, bal) in enumerate(rows):
         name = f"@{uname}" if uname else f"id {uid}"
         text += f"{medals[i]} {name} — {bal} 🎃\n"
@@ -372,13 +411,13 @@ async def cmd_pending(message: types.Message):
         return
     rows = get_pending(30)
     if not rows:
-        await message.answer("Нет заявок в ожидании.")
+        await message.answer("Нет свитков в ожидании.")
         return
-    text = "🎃 Заявки на проверку:\n\n"
+    text = "📜 **Свитки на проверку:**\n\n"
     for pid, uid, qname, ts in rows:
-        text += f"#{pid} · user_id={uid} · {qname}\n"
+        text += f"🔸 #{pid} · user_id={uid} · {qname}\n"
     text += "\n/approve <id> или /reject <id>"
-    await message.answer(text)
+    await message.answer(text, parse_mode="Markdown")
 
 @dp.message(F.text.startswith("/approve "))
 async def cmd_approve(message: types.Message):
@@ -395,12 +434,12 @@ async def cmd_approve(message: types.Message):
     row = cur.fetchone()
     if not row:
         conn.close()
-        await message.answer("Заявка не найдена.")
+        await message.answer("Свиток не найден.")
         return
     uid, qname, status = row
     if status != "pending":
         conn.close()
-        await message.answer(f"Заявка уже {status}.")
+        await message.answer(f"Этот свиток уже {status}.")
         return
     reward = next((q["reward"] for q in QUESTS.values() if q["name"] == qname), 0)
     cur.execute("UPDATE quest_proofs SET status='approved' WHERE id=?", (pid,))
@@ -410,12 +449,14 @@ async def cmd_approve(message: types.Message):
     try:
         await bot.send_message(
             uid,
-            f"🎉 Квест **{qname}** подтверждён! +{reward} 🎃\nБаланс: {new_balance}",
+            f"🎉 Твоё доказательство для квеста **{qname}** принято!\n"
+            f"Тебе начислено **{reward}** тыкв 🎃.\n"
+            f"🎃 Твой котёл: {new_balance}.",
             parse_mode="Markdown",
         )
     except Exception:
         pass
-    await message.answer(f"✅ Заявка #{pid} подтверждена, начислено {reward}.")
+    await message.answer(f"✅ Свиток #{pid} подтверждён, начислено {reward} тыкв.")
 
 @dp.message(F.text.startswith("/reject "))
 async def cmd_reject(message: types.Message):
@@ -432,12 +473,12 @@ async def cmd_reject(message: types.Message):
     row = cur.fetchone()
     if not row:
         conn.close()
-        await message.answer("Заявка не найдена.")
+        await message.answer("Свиток не найден.")
         return
     uid, qname, status = row
     if status != "pending":
         conn.close()
-        await message.answer(f"Заявка уже {status}.")
+        await message.answer(f"Этот свиток уже {status}.")
         return
     cur.execute("UPDATE quest_proofs SET status='rejected' WHERE id=?", (pid,))
     conn.commit()
@@ -445,12 +486,13 @@ async def cmd_reject(message: types.Message):
     try:
         await bot.send_message(
             uid,
-            f"❌ Заявка на **{qname}** отклонена. Напиши @{ADMIN_USERNAME}.",
+            f"❌ Твоё доказательство для квеста **{qname}** отклонено.\n"
+            f"Если это ошибка, напиши мастеру: @{ADMIN_USERNAME}.",
             parse_mode="Markdown",
         )
     except Exception:
         pass
-    await message.answer(f"Заявка #{pid} отклонена.")
+    await message.answer(f"Свиток #{pid} отклонён.")
 
 # --- HEALTHCHECK ---
 async def healthcheck(request):
