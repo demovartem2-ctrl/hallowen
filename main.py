@@ -77,7 +77,6 @@ def init_db():
     cur.execute("CREATE TABLE IF NOT EXISTS user_quest_completions (user_id INTEGER, quest_id TEXT, completed_at TEXT)")
     cur.execute("CREATE TABLE IF NOT EXISTS admins (user_id INTEGER PRIMARY KEY)")
     cur.execute("CREATE TABLE IF NOT EXISTS user_bonuses (user_id INTEGER PRIMARY KEY, last_claim TEXT)")
-    # Новая таблица для кулдауна игры "Сладость или Гадость"
     cur.execute("CREATE TABLE IF NOT EXISTS user_trickortreat (user_id INTEGER PRIMARY KEY, last_played TEXT)")
     
     for admin_id in DEFAULT_ADMINS:
@@ -263,8 +262,8 @@ class AdminViewBalance(StatesGroup):
 class RocketGame(StatesGroup):
     bet = State()
 
-class Broadcast(StatesGroup):
-    message = State()
+class AdminGiveAll(StatesGroup):
+    amount = State()
 
 # --- МАГАЗИН ---
 SHOP_ITEMS = {
@@ -392,11 +391,11 @@ def admin_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text="🪄 Выдать тыквы", callback_data="admin_give")
     b.button(text="🪓 Отобрать тыквы", callback_data="admin_take")
+    b.button(text="🪄 Начислить всем", callback_data="admin_give_all") # Новая кнопка
     b.button(text="👁 Баланс юзера", callback_data="admin_check_bal")
     b.button(text="📊 Балансы всех", callback_data="admin_all_bals")
     b.button(text="📜 Свитки (заявки)", callback_data="admin_pending")
     b.button(text="👑 Выдать админку", callback_data="admin_grant")
-    b.button(text="📢 Сообщение всем", callback_data="admin_broadcast")
     b.button(text="🔙 В главное меню", callback_data="back_to_main")
     b.adjust(1)
     return b.as_markup()
@@ -810,8 +809,7 @@ async def show_quests(cb: types.CallbackQuery):
 @dp.callback_query(F.data == "extra_quests")
 async def show_extra_quests(cb: types.CallbackQuery):
     await cb.message.edit_text(
-        "📜 **Дополнительные квесты**\n\n"
-        "Здесь будут задания за подписку на каналы. Скоро!",
+        "📜 **Дополнительные квесты**\n\nЗдесь будут задания за подписку на каналы. Скоро!",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
             types.InlineKeyboardButton(text="🔙 Назад", callback_data="quest_menu")
         ]]),
@@ -846,35 +844,6 @@ async def admin_panel(cb: types.CallbackQuery):
     if not is_admin(cb.from_user): return await cb.answer("Нет доступа.", show_alert=True)
     await cb.message.edit_text("💀 **Панель Мастера**", reply_markup=admin_kb(), parse_mode="Markdown")
     await cb.answer()
-
-@dp.callback_query(F.data == "admin_broadcast")
-async def admin_broadcast_start(cb: types.CallbackQuery, state: FSMContext):
-    if not is_admin(cb.from_user): return await cb.answer("Нет доступа.", show_alert=True)
-    await state.set_state(Broadcast.message)
-    await cb.message.edit_text("📢 Введи текст для рассылки всем пользователям:", reply_markup=cancel_kb())
-    await cb.answer()
-
-@dp.message(Broadcast.message)
-async def admin_broadcast_send(message: types.Message, state: FSMContext):
-    text = message.text
-    await state.clear()
-    await message.answer("🚀 Начинаю рассылку...")
-    
-    # ИСПРАВЛЕНИЕ: Берем список ВСЕХ пользователей из базы
-    users = get_all_users()
-    success = 0
-    failed = 0
-    
-    for uid in users:
-        try:
-            await bot.send_message(uid, f"📢 **Сообщение от мастера:**\n\n{text}", parse_mode="Markdown")
-            success += 1
-        except Exception as e:
-            failed += 1
-            logging.warning(f"Не удалось отправить {uid}: {e}")
-        await asyncio.sleep(0.05) # Задержка, чтобы не забанил телеграм
-        
-    await message.answer(f"✅ Рассылка завершена!\nУспешно: {success}\nОшибок: {failed}", reply_markup=admin_kb())
 
 @dp.callback_query(F.data == "admin_pending")
 async def admin_pending(cb: types.CallbackQuery):
@@ -941,6 +910,37 @@ async def admin_take_start(cb: types.CallbackQuery, state: FSMContext):
     await state.set_state(AdminAmount.target_id)
     await cb.message.edit_text("🪓 Введи **ID грешника**:", reply_markup=cancel_kb())
     await cb.answer()
+
+# --- НАЧИСЛЕНИЕ ВСЕМ ---
+@dp.callback_query(F.data == "admin_give_all")
+async def admin_give_all_start(cb: types.CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user): return await cb.answer("Нет доступа.", show_alert=True)
+    await state.set_state(AdminGiveAll.amount)
+    await cb.message.edit_text("🪄 Сколько тыкв начислить **ВСЕМ** пользователям?", reply_markup=cancel_kb())
+    await cb.answer()
+
+@dp.message(AdminGiveAll.amount)
+async def admin_give_all_amount(message: types.Message, state: FSMContext):
+    try:
+        amount = int(message.text.strip())
+        if amount <= 0: raise ValueError
+    except ValueError:
+        return await message.answer("Нужно целое число больше 0.")
+    await state.clear()
+    
+    users = get_all_users()
+    await message.answer(f"🚀 Начисляю по {amount} тыкв для {len(users)} пользователей...")
+    
+    success = 0
+    for uid in users:
+        update_balance(uid, "", amount)
+        try:
+            await bot.send_message(uid, f"🎁 **Дар от Мастера!**\n\nТебе начислено **{amount}** 🎃.", parse_mode="Markdown")
+            success += 1
+        except: pass
+        await asyncio.sleep(0.05)
+        
+    await message.answer(f"✅ Готово! Успешно начислено {success} пользователям.", reply_markup=admin_kb())
 
 @dp.callback_query(F.data == "admin_cancel")
 async def admin_cancel(cb: types.CallbackQuery, state: FSMContext):
