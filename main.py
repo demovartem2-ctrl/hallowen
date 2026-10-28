@@ -265,6 +265,9 @@ class RocketGame(StatesGroup):
 class AdminGiveAll(StatesGroup):
     amount = State()
 
+class AdminTakeAll(StatesGroup):
+    amount = State()
+
 # --- МАГАЗИН ---
 SHOP_ITEMS = {
     "item_3blacks": {"name": "3 блека", "price": 650, "limit": 2, "emoji": "🖤"},
@@ -391,7 +394,8 @@ def admin_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text="🪄 Выдать тыквы", callback_data="admin_give")
     b.button(text="🪓 Отобрать тыквы", callback_data="admin_take")
-    b.button(text="🪄 Начислить всем", callback_data="admin_give_all") # Новая кнопка
+    b.button(text="🪄 Начислить всем", callback_data="admin_give_all")
+    b.button(text="🪓 Отобрать у всех", callback_data="admin_take_all") # Новая кнопка
     b.button(text="👁 Баланс юзера", callback_data="admin_check_bal")
     b.button(text="📊 Балансы всех", callback_data="admin_all_bals")
     b.button(text="📜 Свитки (заявки)", callback_data="admin_pending")
@@ -546,7 +550,6 @@ async def trick_or_treat(cb: types.CallbackQuery):
     user_id = cb.from_user.id
     now = datetime.now()
     
-    # Проверка кулдауна
     last_played = get_last_trickortreat(user_id)
     if last_played:
         time_diff = now - last_played
@@ -562,7 +565,6 @@ async def trick_or_treat(cb: types.CallbackQuery):
         await cb.answer("❌ Для игры нужно минимум 25 тыкв! Тьма не любит нищих.", show_alert=True)
         return
         
-    # Записываем время игры
     set_trickortreat_played(user_id)
     
     if random.random() < 0.5:
@@ -941,6 +943,37 @@ async def admin_give_all_amount(message: types.Message, state: FSMContext):
         await asyncio.sleep(0.05)
         
     await message.answer(f"✅ Готово! Успешно начислено {success} пользователям.", reply_markup=admin_kb())
+
+# --- ОТОБРАТЬ У ВСЕХ ---
+@dp.callback_query(F.data == "admin_take_all")
+async def admin_take_all_start(cb: types.CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user): return await cb.answer("Нет доступа.", show_alert=True)
+    await state.set_state(AdminTakeAll.amount)
+    await cb.message.edit_text("🪓 Сколько тыкв отобрать **У ВСЕХ** пользователей?", reply_markup=cancel_kb())
+    await cb.answer()
+
+@dp.message(AdminTakeAll.amount)
+async def admin_take_all_amount(message: types.Message, state: FSMContext):
+    try:
+        amount = abs(int(message.text.strip()))
+        if amount == 0: raise ValueError
+    except ValueError:
+        return await message.answer("Нужно целое число (не 0).")
+    await state.clear()
+    
+    users = get_all_users()
+    await message.answer(f"🚀 Списываю по {amount} тыкв у {len(users)} пользователей...")
+    
+    success = 0
+    for uid in users:
+        update_balance(uid, "", -amount)
+        try:
+            await bot.send_message(uid, f"🪓 **Гнев Мастера!**\n\nУ тебя изъято **{amount}** 🎃.", parse_mode="Markdown")
+            success += 1
+        except: pass
+        await asyncio.sleep(0.05)
+        
+    await message.answer(f"✅ Готово! Успешно списано у {success} пользователей.", reply_markup=admin_kb())
 
 @dp.callback_query(F.data == "admin_cancel")
 async def admin_cancel(cb: types.CallbackQuery, state: FSMContext):
