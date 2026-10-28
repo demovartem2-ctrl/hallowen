@@ -33,7 +33,7 @@ DEFAULT_ADMINS = {1780243203, 1780243210}
 GIFT_IDS = ["9000000000000159", "9000000000000158", "9000000000000153", "9000000000000152", "9000000000000148"]
 
 db_pool: asyncpg.Pool = None
-active_games = {} # {user_id: {"game_type": "mines", "data": ...}}
+active_games = {}
 
 # --- БАЗА ДАННЫХ ---
 async def init_db():
@@ -212,12 +212,11 @@ def games_menu_kb() -> InlineKeyboardMarkup:
     b.button(text="🍬 Сладость/Гадость", callback_data="game_trickortreat")
     b.button(text="📈 Апгрейдер", callback_data="game_upgrader")
     b.button(text="🎡 Колесо (20🎃)", callback_data="game_wheel")
-    b.button(text="💣 Мины", callback_data="mines_menu") # Заменили кейсы на мины
+    b.button(text="💣 Мины", callback_data="mines_menu")
     b.button(text="🔙 Назад", callback_data="back_to_main")
     b.adjust(1)
     return b.as_markup()
 
-# --- ИГРА МИНЫ (КЛАВИАТУРЫ) ---
 def mines_difficulty_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text="🟢 1 мина (x1.05 - x15)", callback_data="mines_diff_1")
@@ -237,7 +236,7 @@ def mines_board_kb(opened: list, multiplier: float) -> InlineKeyboardMarkup:
         else:
             b.button(text="⬜️", callback_data=f"mines_open_{i}")
     b.button(text=f"💰 ЗАБРАТЬ (x{multiplier:.2f})", callback_data="mines_cashout")
-    b.adjust(5, 5, 5, 5, 5, 1) # Сетка 5х5 + кнопка снизу
+    b.adjust(5, 5, 5, 5, 5, 1)
     return b.as_markup()
 
 def rocket_bet_kb() -> InlineKeyboardMarkup:
@@ -461,19 +460,19 @@ async def mines_menu(cb: types.CallbackQuery):
     await cb.answer()
 
 @dp.callback_query(F.data.startswith("mines_diff_"))
-async def mines_difficulty(cb: types.CallbackQuery):
-    # Заглушка для выбора сложности (просто запоминаем сложность в стейте)
+async def mines_difficulty(cb: types.CallbackQuery, state: FSMContext):
     difficulty = cb.data.replace("mines_diff_", "")
+    
+    # Сохраняем сложность в стейт
+    await state.update_data(difficulty=int(difficulty))
+    await state.set_state(MinesGame.bet)
+    
     await cb.message.edit_text(
         f"💣 Ты выбрал режим: **{difficulty} мин**\n\n"
         f"Введи сумму ставки (от 10 до 5000 тыкв):",
         reply_markup=cancel_kb("mines_menu"),
         parse_mode="Markdown"
     )
-    # Сохраняем сложность в FSM
-    await state = dp.fsm.get_context(bot, cb.from_user.id, cb.message.chat.id)
-    await state.update_data(difficulty=int(difficulty))
-    await state.set_state(MinesGame.bet)
     await cb.answer()
 
 @dp.message(MinesGame.bet)
@@ -488,12 +487,10 @@ async def mines_bet_input(message: types.Message, state: FSMContext):
     if info['balance'] < bet: return await message.answer("❌ Недостаточно тыкв!")
     
     data = await state.get_data()
-    difficulty = data.get("difficulty", 3) # по умолчанию 3
+    difficulty = data.get("difficulty", 3)
     
-    # Списание ставки
     await update_balance(message.from_user.id, "", -bet, is_spending=True)
     
-    # Генерация поля с минами
     total_cells = 25
     mine_positions = random.sample(range(total_cells), difficulty)
     
@@ -506,7 +503,7 @@ async def mines_bet_input(message: types.Message, state: FSMContext):
     }
     active_games[message.from_user.id] = game_data
     
-    multiplier = 1.0 # Начальный икс
+    multiplier = 1.0
     text = (
         f"💣 **Поле 5х5** (мин: {difficulty})\n"
         f"💰 Ставка: {bet} 🎃\n"
@@ -529,9 +526,7 @@ async def mines_open_cell(cb: types.CallbackQuery):
         return await cb.answer("Эта клетка уже открыта.", show_alert=True)
         
     if cell_index in game["mines"]:
-        # Взрыв
         del active_games[user_id]
-        # Показываем все мины
         b = InlineKeyboardBuilder()
         for i in range(25):
             if i in game["mines"]: b.button(text="💥", callback_data="ignore")
@@ -543,36 +538,25 @@ async def mines_open_cell(cb: types.CallbackQuery):
         await cb.message.edit_text(
             f"💥 **БАБАХ! Ты подорвался!**\n\n"
             f"Ставка: {game['bet']} 🎃 сгорела.\n\n"
-            f"🎃 Твой баланс: **{await get_user_info(user_id)['balance']}**.",
+            f"🎃 Твой баланс: **{(await get_user_info(user_id))['balance']}**.",
             reply_markup=b.as_markup(), parse_mode="Markdown"
         )
         return await cb.answer("Взрыв!")
         
-    # Безопасная клетка
     game["opened"].append(cell_index)
     
-    # Пересчет множителя
     total_cells = 25
     mines = game["difficulty"]
     opened_count = len(game["opened"])
     safe_cells_total = total_cells - mines
     safe_opened = opened_count
     
-    # Математический пересчет множителя для честной игры
-    # Вероятность следующего шага = (безопасные_оставшиеся) / (всего_оставшихся)
-    # Множитель растет на 1/вероятность
-    # Для простоты используем формулу комбинаций или просто растущий коэффициент
-    # Упрощенная формула для бота:
     multiplier = 1.0
     for i in range(safe_opened):
         multiplier *= (total_cells - i) / (safe_cells_total - i)
-    
-    # Немного уменьшаем икс (комиссия казино), чтобы бот не ушел в минус
     multiplier *= 0.95 
     
-    # Обновляем сообщение
     if safe_opened == safe_cells_total:
-        # Игрок выиграл по максимуму
         win = int(game["bet"] * multiplier)
         new_bal = await update_balance(user_id, "", win)
         del active_games[user_id]
@@ -584,7 +568,6 @@ async def mines_open_cell(cb: types.CallbackQuery):
         )
         return await cb.answer("Максимальный выигрыш!")
     
-    # Продолжаем игру
     text = (
         f"💣 **Поле 5х5** (мин: {mines})\n"
         f"💰 Ставка: {game['bet']} 🎃\n"
@@ -607,7 +590,6 @@ async def mines_cashout(cb: types.CallbackQuery):
         
     del active_games[user_id]
     
-    # Пересчитываем финальный икс
     total_cells = 25
     mines = game["difficulty"]
     opened_count = len(game["opened"])
