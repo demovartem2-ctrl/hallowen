@@ -470,10 +470,10 @@ async def buy_case(cb: types.CallbackQuery):
         
     # 4. Данные кейсов
     cases = {
-        "pautina": {"price": 150, "name": "Паутина", "max": 400},
-        "sosiska": {"price": 333, "name": "Сосиска", "max": 800},
-        "tykva": {"price": 666, "name": "Тыква", "max": 1500},
-        "strashny": {"price": 777, "name": "Страшный мисс", "max": 1900}
+        "pautina": {"price": 150, "name": "Паутина"},
+        "sosiska": {"price": 333, "name": "Сосиска"},
+        "tykva": {"price": 666, "name": "Тыква"},
+        "strashny": {"price": 777, "name": "Страшный мисс"}
     }
     c_data = cases[case_id]
     
@@ -500,32 +500,32 @@ async def buy_case(cb: types.CallbackQuery):
     
     await asyncio.sleep(1.5) # Ждем
     
-    # 8. Генерация награды
+    # 8. Генерация награды (ГАРАНТИРОВАННЫЙ МИНИМУМ 25)
     r = random.random()
     if case_id == "pautina":
-        if r < 0.5: reward = random.randint(10, 50)
-        elif r < 0.8: reward = random.randint(51, 150)
-        elif r < 0.95: reward = random.randint(151, 250)
-        elif r < 0.995: reward = random.randint(251, 350)
-        else: reward = random.randint(351, 400)
+        # Ставка 150
+        if r < 0.60: reward = random.randint(25, 70)
+        elif r < 0.85: reward = random.randint(71, 150)
+        elif r < 0.97: reward = random.randint(151, 250)
+        else: reward = random.randint(251, 400)
     elif case_id == "sosiska":
-        if r < 0.5: reward = random.randint(50, 150)
-        elif r < 0.8: reward = random.randint(151, 300)
-        elif r < 0.95: reward = random.randint(301, 500)
-        elif r < 0.995: reward = random.randint(501, 650)
-        else: reward = random.randint(651, 800)
+        # Ставка 333
+        if r < 0.60: reward = random.randint(50, 150)
+        elif r < 0.85: reward = random.randint(151, 333)
+        elif r < 0.97: reward = random.randint(334, 600)
+        else: reward = random.randint(601, 800)
     elif case_id == "tykva":
-        if r < 0.5: reward = random.randint(100, 300)
-        elif r < 0.8: reward = random.randint(301, 600)
-        elif r < 0.95: reward = random.randint(601, 900)
-        elif r < 0.995: reward = random.randint(901, 1200)
+        # Ставка 666
+        if r < 0.60: reward = random.randint(100, 300)
+        elif r < 0.85: reward = random.randint(301, 666)
+        elif r < 0.97: reward = random.randint(667, 1200)
         else: reward = random.randint(1201, 1500)
     elif case_id == "strashny":
-        if r < 0.5: reward = random.randint(150, 400)
-        elif r < 0.8: reward = random.randint(401, 800)
-        elif r < 0.95: reward = random.randint(801, 1200)
-        elif r < 0.995: reward = random.randint(1201, 1500)
-        else: reward = random.randint(1501, 1900)
+        # Ставка 777
+        if r < 0.60: reward = random.randint(150, 400)
+        elif r < 0.85: reward = random.randint(401, 777)
+        elif r < 0.97: reward = random.randint(778, 1400)
+        else: reward = random.randint(1401, 1900)
             
     # 9. Начисление награды
     new_bal = await update_balance(cb.from_user.id, "", reward)
