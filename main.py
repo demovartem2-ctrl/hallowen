@@ -29,7 +29,9 @@ API_BASE = os.environ.get("API_BASE", "https://misugram.cloud-ip.cc")
 ADMIN_USERNAME = "sardelka"
 DEFAULT_ADMINS = {1780243203, 1780243210}
 
-DB_FILE = "halloween_bot.db"
+# ИЗМЕНЕНО: Теперь база лежит на постоянном диске
+DB_FILE = "/var/data/halloween_bot.db"
+
 active_games = {}
 
 # --- СПИСОК ПОДАРКОВ ---
@@ -77,6 +79,9 @@ def get_all_users():
 
 # --- БАЗА ДАННЫХ ---
 def init_db():
+    # Создаем папку, если ее нет (для локального теста)
+    os.makedirs(os.path.dirname(DB_FILE), exist_ok=True)
+    
     conn = sqlite3.connect(DB_FILE)
     cur = conn.cursor()
     cur.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT, balance INTEGER DEFAULT 0)")
@@ -379,7 +384,6 @@ def shop_kb(user_id: int) -> InlineKeyboardMarkup:
 
 def buy_stars_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    # НОВЫЙ КУРС 1:10
     b.button(text="100 🎃 (1000 ⭐)", callback_data="buy_stars_100")
     b.button(text="250 🎃 (2500 ⭐)", callback_data="buy_stars_250")
     b.button(text="500 🎃 (5000 ⭐)", callback_data="buy_stars_500")
@@ -425,7 +429,7 @@ def admin_kb() -> InlineKeyboardMarkup:
     b.button(text="🪓 Отобрать тыквы", callback_data="admin_take")
     b.button(text="🪄 Начислить всем", callback_data="admin_give_all")
     b.button(text="🪓 Отобрать у всех", callback_data="admin_take_all")
-    b.button(text="🎁 Подарить подарки", callback_data="admin_gift_all") # Новая кнопка
+    b.button(text="🎁 Подарить подарки", callback_data="admin_gift_all")
     b.button(text="👁 Баланс юзера", callback_data="admin_check_bal")
     b.button(text="📊 Балансы всех", callback_data="admin_all_bals")
     b.button(text="📜 Свитки (заявки)", callback_data="admin_pending")
@@ -779,7 +783,6 @@ async def upgrader_fast(cb: types.CallbackQuery, state: FSMContext):
     
     update_balance(cb.from_user.id, "", -bet)
     
-    # Шанс 35% на успех (x2)
     if random.random() < 0.35:
         win_amount = bet * 2
         new_balance = update_balance(cb.from_user.id, "", win_amount)
@@ -801,7 +804,6 @@ async def upgrader_slow(cb: types.CallbackQuery, state: FSMContext):
     
     update_balance(cb.from_user.id, "", -bet)
     
-    # Шанс 60% на успех (x1.5)
     if random.random() < 0.6:
         win_amount = int(bet * 1.5)
         new_balance = update_balance(cb.from_user.id, "", win_amount)
@@ -910,7 +912,6 @@ async def process_custom_amount(message: types.Message, state: FSMContext):
         return await message.answer("❌ Ошибка! Введи целое число не меньше 100.")
     
     await state.clear()
-    # НОВЫЙ КУРС 1:10
     stars = pumpkins * 10
     prices = [LabeledPrice(label="XTR", amount=stars)]
     await message.answer_invoice(title="Покупка тыкв 🎃", description=f"Покупка {pumpkins} тыкв за {stars} звёзд.", prices=prices, provider_token="", currency="XTR", payload=f"stars_{pumpkins}")
@@ -918,7 +919,6 @@ async def process_custom_amount(message: types.Message, state: FSMContext):
 @dp.callback_query(F.data.startswith("buy_stars_") & ~F.data.startswith("buy_stars_custom") & ~F.data.startswith("buy_stars_cancel") & ~F.data.startswith("buy_stars_menu"))
 async def process_preset_stars(cb: types.CallbackQuery):
     pumpkins = int(cb.data.replace("buy_stars_", ""))
-    # НОВЫЙ КУРС 1:10
     stars = pumpkins * 10
     prices = [LabeledPrice(label="XTR", amount=stars)]
     await cb.message.answer_invoice(title="Покупка тыкв 🎃", description=f"Покупка {pumpkins} тыкв за {stars} звёзд.", prices=prices, provider_token="", currency="XTR", payload=f"stars_{pumpkins}")
@@ -1135,14 +1135,12 @@ async def admin_send_gift_process(cb: types.CallbackQuery):
     
     for uid in users:
         try:
-            # В aiogram 3 используется метод send_gift
             await bot.send_gift(user_id=uid, gift_id=gift_id)
             success += 1
         except Exception as e:
             logging.warning(f"Ошибка отправки подарка {uid}: {e}")
             failed += 1
         
-        # Задержка, чтобы не забанил телеграм
         await asyncio.sleep(0.5)
         
     await cb.message.answer(
