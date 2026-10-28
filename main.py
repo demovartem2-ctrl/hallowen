@@ -268,6 +268,9 @@ class AdminGiveAll(StatesGroup):
 class AdminTakeAll(StatesGroup):
     amount = State()
 
+class Upgrader(StatesGroup):
+    amount = State()
+
 # --- МАГАЗИН ---
 SHOP_ITEMS = {
     "item_3blacks": {"name": "3 блека", "price": 650, "limit": 2, "emoji": "🖤"},
@@ -305,6 +308,7 @@ def games_menu_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text="🚀 Ракета (x2, x3...)", callback_data="game_rocket")
     b.button(text="🍬 Сладость или Гадость", callback_data="game_trickortreat")
+    b.button(text="📈 Обгрейдер", callback_data="game_upgrader") # Новая кнопка
     b.button(text="🔙 Назад в меню", callback_data="back_to_main")
     b.adjust(1)
     return b.as_markup()
@@ -322,6 +326,21 @@ def rocket_bet_kb() -> InlineKeyboardMarkup:
 def rocket_cashout_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text="💰 ЗАБРАТЬ ТЫКВЫ", callback_data="rocket_cashout")
+    b.adjust(1)
+    return b.as_markup()
+
+def upgrader_choice_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="⚡ Быстро (Шанс 40%, x2)", callback_data="upgrade_fast")
+    b.button(text="🐢 Медленно (Шанс 70%, x1.5)", callback_data="upgrade_slow")
+    b.button(text="🔙 Назад", callback_data="games_menu")
+    b.adjust(1)
+    return b.as_markup()
+
+def upgrader_retry_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="🔄 Сыграть ещё раз", callback_data="game_upgrader")
+    b.button(text="🔙 В игры", callback_data="games_menu")
     b.adjust(1)
     return b.as_markup()
 
@@ -395,7 +414,7 @@ def admin_kb() -> InlineKeyboardMarkup:
     b.button(text="🪄 Выдать тыквы", callback_data="admin_give")
     b.button(text="🪓 Отобрать тыквы", callback_data="admin_take")
     b.button(text="🪄 Начислить всем", callback_data="admin_give_all")
-    b.button(text="🪓 Отобрать у всех", callback_data="admin_take_all") # Новая кнопка
+    b.button(text="🪓 Отобрать у всех", callback_data="admin_take_all")
     b.button(text="👁 Баланс юзера", callback_data="admin_check_bal")
     b.button(text="📊 Балансы всех", callback_data="admin_all_bals")
     b.button(text="📜 Свитки (заявки)", callback_data="admin_pending")
@@ -404,7 +423,7 @@ def admin_kb() -> InlineKeyboardMarkup:
     b.adjust(1)
     return b.as_markup()
 
-def cancel_kb() -> InlineKeyboardMarkup:
+def cancel_admin_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text="❌ Отмена", callback_data="admin_cancel")
     b.adjust(1)
@@ -412,23 +431,23 @@ def cancel_kb() -> InlineKeyboardMarkup:
 
 def cancel_stars_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="❌ Отмена", callback_data="balance_menu")
+    b.button(text="❌ Отмена", callback_data="buy_stars_cancel")
     b.adjust(1)
     return b.as_markup()
 
 def cancel_transfer_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="❌ Отмена", callback_data="balance_menu")
-    b.adjust(1)
-    return b.as_markup()
-
-def cancel_view_kb() -> InlineKeyboardMarkup:
-    b = InlineKeyboardBuilder()
-    b.button(text="❌ Отмена", callback_data="admin_panel")
+    b.button(text="❌ Отмена", callback_data="transfer_cancel")
     b.adjust(1)
     return b.as_markup()
 
 def cancel_rocket_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="❌ Отмена", callback_data="rocket_cancel")
+    b.adjust(1)
+    return b.as_markup()
+
+def cancel_upgrader_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text="❌ Отмена", callback_data="games_menu")
     b.adjust(1)
@@ -612,7 +631,13 @@ async def rocket_bet_custom_handler(message: types.Message, state: FSMContext):
     await state.clear()
     await start_rocket_game(message.from_user.id, bet, message)
 
-@dp.callback_query(F.data.startswith("rocket_bet_") & ~F.data.startswith("rocket_bet_custom"))
+@dp.callback_query(F.data == "rocket_cancel")
+async def rocket_cancel(cb: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await cb.message.edit_text("🎮 **Игровой зал**\n\nВыбирай испытание. Тьма любит азартных...", reply_markup=games_menu_kb(), parse_mode="Markdown")
+    await cb.answer("Отменено")
+
+@dp.callback_query(F.data.startswith("rocket_bet_") & ~F.data.startswith("rocket_bet_custom") & ~F.data.startswith("rocket_cancel"))
 async def rocket_bet_preset(cb: types.CallbackQuery):
     bet = int(cb.data.replace("rocket_bet_", ""))
     await start_rocket_game(cb.from_user.id, bet, cb.message, cb)
@@ -694,12 +719,94 @@ async def rocket_cashout(cb: types.CallbackQuery):
     )
     await cb.answer("Тыквы у тебя в котле!")
 
+# --- ОБГРЕЙДЕР ---
+@dp.callback_query(F.data == "game_upgrader")
+async def upgrader_start(cb: types.CallbackQuery, state: FSMContext):
+    await state.set_state(Upgrader.amount)
+    await cb.message.edit_text(
+        "📈 **Обгрейдер**\n\n"
+        "Введи сумму в тыквах, которую хочешь поставить:",
+        reply_markup=cancel_upgrader_kb()
+    )
+    await cb.answer()
+
+@dp.message(Upgrader.amount)
+async def upgrader_amount(message: types.Message, state: FSMContext):
+    try:
+        bet = int(message.text.strip())
+        if bet <= 0: raise ValueError
+    except ValueError:
+        return await message.answer("❌ Введи целое число больше 0.")
+    
+    balance = get_balance(message.from_user.id)
+    if balance < bet:
+        return await message.answer(f"❌ Недостаточно тыкв! У тебя только {balance} 🎃.")
+    
+    await state.update_data(bet=bet)
+    await message.answer(
+        f"📈 Ставка: **{bet}** 🎃.\n\n"
+        f"Выбери режим обгрейда:",
+        reply_markup=upgrader_choice_kb(),
+        parse_mode="Markdown"
+    )
+
+@dp.callback_query(F.data == "upgrade_fast")
+async def upgrader_fast(cb: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    bet = data.get("bet")
+    if not bet:
+        return await cb.answer("Сессия устарела. Начни заново.", show_alert=True)
+    await state.clear()
+    
+    # Списываем ставку сразу
+    update_balance(cb.from_user.id, "", -bet)
+    
+    # Шанс 40% на успех (x2)
+    if random.random() < 0.4:
+        win_amount = bet * 2
+        new_balance = update_balance(cb.from_user.id, "", win_amount)
+        text = f"🎉 **Вы выиграли!**\n\nСтавка: {bet} 🎃\nВыигрыш: **+{win_amount}** 🎃 (x2)\n\n🎃 Ваш баланс: **{new_balance}**."
+    else:
+        new_balance = get_balance(cb.from_user.id)
+        text = f"💀 **Вы проиграли!**\n\nСтавка: {bet} 🎃 сгорела.\n\n🎃 Ваш баланс: **{new_balance}**."
+        
+    await cb.message.edit_text(text, reply_markup=upgrader_retry_kb(), parse_mode="Markdown")
+    await cb.answer()
+
+@dp.callback_query(F.data == "upgrade_slow")
+async def upgrader_slow(cb: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    bet = data.get("bet")
+    if not bet:
+        return await cb.answer("Сессия устарела. Начни заново.", show_alert=True)
+    await state.clear()
+    
+    update_balance(cb.from_user.id, "", -bet)
+    
+    # Шанс 70% на успех (x1.5)
+    if random.random() < 0.7:
+        win_amount = int(bet * 1.5)
+        new_balance = update_balance(cb.from_user.id, "", win_amount)
+        text = f"🎉 **Вы выиграли!**\n\nСтавка: {bet} 🎃\nВыигрыш: **+{win_amount}** 🎃 (x1.5)\n\n🎃 Ваш баланс: **{new_balance}**."
+    else:
+        new_balance = get_balance(cb.from_user.id)
+        text = f"💀 **Вы проиграли!**\n\nСтавка: {bet} 🎃 сгорела.\n\n🎃 Ваш баланс: **{new_balance}**."
+        
+    await cb.message.edit_text(text, reply_markup=upgrader_retry_kb(), parse_mode="Markdown")
+    await cb.answer()
+
 # --- ПЕРЕВОД ТЫКВ ---
 @dp.callback_query(F.data == "transfer_start")
 async def transfer_start(cb: types.CallbackQuery, state: FSMContext):
     await state.set_state(TransferPumpkins.target)
     await cb.message.edit_text("💸 **Перевод тыкв**\n\nВведи **ID** или **@username** получателя:", reply_markup=cancel_transfer_kb(), parse_mode="Markdown")
     await cb.answer()
+
+@dp.callback_query(F.data == "transfer_cancel")
+async def transfer_cancel(cb: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await cb.message.edit_text("💰 **Всё, что связано с тыквами:**", reply_markup=balance_menu_kb(), parse_mode="Markdown")
+    await cb.answer("Отменено")
 
 @dp.message(TransferPumpkins.target)
 async def transfer_target(message: types.Message, state: FSMContext):
@@ -770,6 +877,12 @@ async def buy_stars_custom(cb: types.CallbackQuery, state: FSMContext):
     await cb.message.edit_text("✍️ Напиши, сколько **тыкв** ты хочешь купить (не меньше 100):", reply_markup=cancel_stars_kb())
     await cb.answer()
 
+@dp.callback_query(F.data == "buy_stars_cancel")
+async def buy_stars_cancel(cb: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await cb.message.edit_text("💰 **Всё, что связано с тыквами:**", reply_markup=balance_menu_kb(), parse_mode="Markdown")
+    await cb.answer("Отменено")
+
 @dp.message(BuyStars.custom_amount)
 async def process_custom_amount(message: types.Message, state: FSMContext):
     try:
@@ -783,7 +896,7 @@ async def process_custom_amount(message: types.Message, state: FSMContext):
     prices = [LabeledPrice(label="XTR", amount=stars)]
     await message.answer_invoice(title="Покупка тыкв 🎃", description=f"Покупка {pumpkins} тыкв за {stars} звёзд.", prices=prices, provider_token="", currency="XTR", payload=f"stars_{pumpkins}")
 
-@dp.callback_query(F.data.startswith("buy_stars_") & ~F.data.startswith("buy_stars_custom") & ~F.data.startswith("buy_stars_menu"))
+@dp.callback_query(F.data.startswith("buy_stars_") & ~F.data.startswith("buy_stars_custom") & ~F.data.startswith("buy_stars_cancel") & ~F.data.startswith("buy_stars_menu"))
 async def process_preset_stars(cb: types.CallbackQuery):
     pumpkins = int(cb.data.replace("buy_stars_", ""))
     stars = math.ceil(pumpkins * 17.5)
@@ -819,25 +932,28 @@ async def show_extra_quests(cb: types.CallbackQuery):
     )
     await cb.answer()
 
-@dp.callback_query(F.data.startswith("quest_q"))
+@dp.callback_query(F.data.startswith("quest_"))
 async def handle_quest(cb: types.CallbackQuery):
     quest_key = cb.data.replace("quest_", "")
     quest = QUEST_POOL.get(quest_key)
     if not quest: return await cb.answer("Квест устарел.", show_alert=True)
-    await cb.message.edit_text(f"🕷️ **{quest['name']}**\n\n📜 {quest['desc']}\n💰 Награда: **{quest['reward']} тыкв** 🎃\n\n📩 Докажи: @{ADMIN_USERNAME}", reply_markup=proof_kb(cb.data), parse_mode="Markdown")
+    await cb.message.edit_text(f"🕷️ **{quest['name']}**\n\n📜 {quest['desc']}\n💰 Награда: **{quest['reward']} тыкв** 🎃\n\n📩 Докажи: @{ADMIN_USERNAME}", reply_markup=proof_kb(quest_key), parse_mode="Markdown")
     await cb.answer()
 
 @dp.callback_query(F.data.startswith("proof_sent_"))
 async def handle_proof(cb: types.CallbackQuery):
-    quest_key = cb.data.replace("proof_sent_quest_", "")
+    # ИСПРАВЛЕНО: корректный парсинг ключа квеста
+    quest_key = cb.data.replace("proof_sent_", "")
     quest = QUEST_POOL.get(quest_key)
-    if not quest: return await cb.answer("Ошибка.", show_alert=True)
+    if not quest: return await cb.answer("Ошибка: квест не найден.", show_alert=True)
+    
     save_proof(cb.from_user.id, quest["name"], "Заявка")
     conn = sqlite3.connect(DB_FILE)
     conn.execute("INSERT INTO user_quest_completions (user_id, quest_id, completed_at) VALUES (?, ?, ?)", (cb.from_user.id, quest_key, datetime.now().isoformat()))
     conn.commit()
     conn.close()
-    await cb.message.edit_text(f"✅ Заявка на **{quest['name']}** отправлена!", parse_mode="Markdown")
+    
+    await cb.message.edit_text(f"✅ Заявка на **{quest['name']}** отправлена!\nМастер проверит её.", parse_mode="Markdown")
     await cb.answer("Отправлено!")
 
 # --- АДМИН-ПАНЕЛЬ ---
@@ -869,7 +985,7 @@ async def admin_all_bals(cb: types.CallbackQuery):
 async def admin_check_bal_start(cb: types.CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user): return await cb.answer("Нет доступа.", show_alert=True)
     await state.set_state(AdminViewBalance.target)
-    await cb.message.edit_text("👁 Введи **ID** или **@username**:", reply_markup=cancel_view_kb())
+    await cb.message.edit_text("👁 Введи **ID** или **@username**:", reply_markup=cancel_admin_kb())
     await cb.answer()
 
 @dp.message(AdminViewBalance.target)
@@ -883,7 +999,7 @@ async def admin_check_bal(message: types.Message, state: FSMContext):
 async def admin_grant_start(cb: types.CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user): return await cb.answer("Нет доступа.", show_alert=True)
     await state.set_state(GrantAdmin.target_id)
-    await cb.message.edit_text("👑 Введи **ID** или **@username** нового админа:", reply_markup=cancel_kb())
+    await cb.message.edit_text("👑 Введи **ID** или **@username** нового админа:", reply_markup=cancel_admin_kb())
     await cb.answer()
 
 @dp.message(GrantAdmin.target_id)
@@ -902,7 +1018,7 @@ async def admin_give_start(cb: types.CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user): return await cb.answer("Нет доступа.", show_alert=True)
     await state.update_data(action="give")
     await state.set_state(AdminAmount.target_id)
-    await cb.message.edit_text("🪄 Введи **ID жертвы**:", reply_markup=cancel_kb())
+    await cb.message.edit_text("🪄 Введи **ID жертвы**:", reply_markup=cancel_admin_kb())
     await cb.answer()
 
 @dp.callback_query(F.data == "admin_take")
@@ -910,7 +1026,7 @@ async def admin_take_start(cb: types.CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user): return await cb.answer("Нет доступа.", show_alert=True)
     await state.update_data(action="take")
     await state.set_state(AdminAmount.target_id)
-    await cb.message.edit_text("🪓 Введи **ID грешника**:", reply_markup=cancel_kb())
+    await cb.message.edit_text("🪓 Введи **ID грешника**:", reply_markup=cancel_admin_kb())
     await cb.answer()
 
 # --- НАЧИСЛЕНИЕ ВСЕМ ---
@@ -918,7 +1034,7 @@ async def admin_take_start(cb: types.CallbackQuery, state: FSMContext):
 async def admin_give_all_start(cb: types.CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user): return await cb.answer("Нет доступа.", show_alert=True)
     await state.set_state(AdminGiveAll.amount)
-    await cb.message.edit_text("🪄 Сколько тыкв начислить **ВСЕМ** пользователям?", reply_markup=cancel_kb())
+    await cb.message.edit_text("🪄 Сколько тыкв начислить **ВСЕМ** пользователям?", reply_markup=cancel_admin_kb())
     await cb.answer()
 
 @dp.message(AdminGiveAll.amount)
@@ -949,7 +1065,7 @@ async def admin_give_all_amount(message: types.Message, state: FSMContext):
 async def admin_take_all_start(cb: types.CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user): return await cb.answer("Нет доступа.", show_alert=True)
     await state.set_state(AdminTakeAll.amount)
-    await cb.message.edit_text("🪓 Сколько тыкв отобрать **У ВСЕХ** пользователей?", reply_markup=cancel_kb())
+    await cb.message.edit_text("🪓 Сколько тыкв отобрать **У ВСЕХ** пользователей?", reply_markup=cancel_admin_kb())
     await cb.answer()
 
 @dp.message(AdminTakeAll.amount)
@@ -987,7 +1103,7 @@ async def handle_target(message: types.Message, state: FSMContext):
     except: return await message.answer("Нужен ID.")
     await state.update_data(target=target)
     await state.set_state(AdminAmount.amount)
-    await message.answer("Сколько тыкв?", reply_markup=cancel_kb())
+    await message.answer("Сколько тыкв?", reply_markup=cancel_admin_kb())
 
 @dp.message(AdminAmount.amount)
 async def handle_amount(message: types.Message, state: FSMContext):
