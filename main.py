@@ -77,6 +77,8 @@ def init_db():
     cur.execute("CREATE TABLE IF NOT EXISTS user_quest_completions (user_id INTEGER, quest_id TEXT, completed_at TEXT)")
     cur.execute("CREATE TABLE IF NOT EXISTS admins (user_id INTEGER PRIMARY KEY)")
     cur.execute("CREATE TABLE IF NOT EXISTS user_bonuses (user_id INTEGER PRIMARY KEY, last_claim TEXT)")
+    # Новая таблица для кулдауна игры "Сладость или Гадость"
+    cur.execute("CREATE TABLE IF NOT EXISTS user_trickortreat (user_id INTEGER PRIMARY KEY, last_played TEXT)")
     
     for admin_id in DEFAULT_ADMINS:
         cur.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (admin_id,))
@@ -195,6 +197,23 @@ def set_bonus_claimed(user_id: int):
     conn = sqlite3.connect(DB_FILE)
     cur = conn.cursor()
     cur.execute("INSERT INTO user_bonuses (user_id, last_claim) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_claim = ?", (user_id, now_str, now_str))
+    conn.commit()
+    conn.close()
+
+def get_last_trickortreat(user_id: int) -> Optional[datetime]:
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    cur.execute("SELECT last_played FROM user_trickortreat WHERE user_id = ?", (user_id,))
+    row = cur.fetchone()
+    conn.close()
+    if row: return datetime.fromisoformat(row[0])
+    return None
+
+def set_trickortreat_played(user_id: int):
+    now_str = datetime.now().isoformat()
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    cur.execute("INSERT INTO user_trickortreat (user_id, last_played) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_played = ?", (user_id, now_str, now_str))
     conn.commit()
     conn.close()
 
@@ -526,12 +545,27 @@ async def show_games(cb: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "game_trickortreat")
 async def trick_or_treat(cb: types.CallbackQuery):
     user_id = cb.from_user.id
-    balance = get_balance(user_id)
+    now = datetime.now()
     
+    # Проверка кулдауна
+    last_played = get_last_trickortreat(user_id)
+    if last_played:
+        time_diff = now - last_played
+        if time_diff < timedelta(hours=24):
+            remaining = timedelta(hours=24) - time_diff
+            hours, remainder = divmod(remaining.seconds, 3600)
+            minutes, _ = divmod(remainder, 60)
+            await cb.answer(f"🎃 Тьма отдыхает. Возвращайся через {hours} ч. {minutes} мин.", show_alert=True)
+            return
+
+    balance = get_balance(user_id)
     if balance < 25:
         await cb.answer("❌ Для игры нужно минимум 25 тыкв! Тьма не любит нищих.", show_alert=True)
         return
         
+    # Записываем время игры
+    set_trickortreat_played(user_id)
+    
     if random.random() < 0.5:
         new_balance = update_balance(user_id, "", 25)
         text = (
@@ -826,6 +860,7 @@ async def admin_broadcast_send(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer("🚀 Начинаю рассылку...")
     
+    # ИСПРАВЛЕНИЕ: Берем список ВСЕХ пользователей из базы
     users = get_all_users()
     success = 0
     failed = 0
@@ -834,9 +869,10 @@ async def admin_broadcast_send(message: types.Message, state: FSMContext):
         try:
             await bot.send_message(uid, f"📢 **Сообщение от мастера:**\n\n{text}", parse_mode="Markdown")
             success += 1
-        except:
+        except Exception as e:
             failed += 1
-        await asyncio.sleep(0.05)
+            logging.warning(f"Не удалось отправить {uid}: {e}")
+        await asyncio.sleep(0.05) # Задержка, чтобы не забанил телеграм
         
     await message.answer(f"✅ Рассылка завершена!\nУспешно: {success}\nОшибок: {failed}", reply_markup=admin_kb())
 
