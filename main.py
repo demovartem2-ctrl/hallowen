@@ -33,7 +33,7 @@ DEFAULT_ADMINS = {1780243203, 1780243210}
 GIFT_IDS = ["9000000000000159", "9000000000000158", "9000000000000153", "9000000000000152", "9000000000000148"]
 
 db_pool: asyncpg.Pool = None
-active_games = {}
+active_games = {} # {user_id: {"game_type": "mines", "data": ...}}
 
 # --- БАЗА ДАННЫХ ---
 async def init_db():
@@ -49,7 +49,6 @@ async def init_db():
         await conn.execute("CREATE TABLE IF NOT EXISTS user_bonuses (user_id BIGINT PRIMARY KEY, last_claim TIMESTAMP, streak INTEGER DEFAULT 0)")
         await conn.execute("CREATE TABLE IF NOT EXISTS user_trickortreat (user_id BIGINT PRIMARY KEY, last_played TIMESTAMP)")
         await conn.execute("CREATE TABLE IF NOT EXISTS user_wheel (user_id BIGINT PRIMARY KEY, last_played TIMESTAMP)")
-        await conn.execute("CREATE TABLE IF NOT EXISTS user_case_cd (user_id BIGINT PRIMARY KEY, last_time TIMESTAMP)")
         
         for admin_id in DEFAULT_ADMINS:
             await conn.execute("INSERT INTO admins (user_id) VALUES ($1) ON CONFLICT DO NOTHING", admin_id)
@@ -165,6 +164,8 @@ class AdminViewBalance(StatesGroup):
     target = State()
 class RocketGame(StatesGroup):
     bet = State()
+class MinesGame(StatesGroup):
+    bet = State()
 class AdminGiveAll(StatesGroup):
     amount = State()
 class AdminTakeAll(StatesGroup):
@@ -211,17 +212,32 @@ def games_menu_kb() -> InlineKeyboardMarkup:
     b.button(text="🍬 Сладость/Гадость", callback_data="game_trickortreat")
     b.button(text="📈 Апгрейдер", callback_data="game_upgrader")
     b.button(text="🎡 Колесо (20🎃)", callback_data="game_wheel")
-    b.button(text="🎁 Кейсы", callback_data="case_menu")
+    b.button(text="💣 Мины", callback_data="mines_menu") # Заменили кейсы на мины
     b.button(text="🔙 Назад", callback_data="back_to_main")
     b.adjust(1)
     return b.as_markup()
 
-def cases_menu_kb() -> InlineKeyboardMarkup:
+# --- ИГРА МИНЫ (КЛАВИАТУРЫ) ---
+def mines_difficulty_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="🌭 Сосиска (333 🎃) [до 800]", callback_data="buy_case_sosiska")
-    b.button(text="🎃 Тыква (666 🎃) [до 1500]", callback_data="buy_case_tykva")
+    b.button(text="🟢 1 мина (x1.05 - x15)", callback_data="mines_diff_1")
+    b.button(text="🟡 3 мины (x1.1 - x50)", callback_data="mines_diff_3")
+    b.button(text="🟠 5 мин (x1.2 - x100)", callback_data="mines_diff_5")
+    b.button(text="🔴 10 мин (x1.5 - x500)", callback_data="mines_diff_10")
+    b.button(text="💀 24 мины (x25 - x1000)", callback_data="mines_diff_24")
     b.button(text="🔙 Назад", callback_data="games_menu")
     b.adjust(1)
+    return b.as_markup()
+
+def mines_board_kb(opened: list, multiplier: float) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    for i in range(25):
+        if i in opened:
+            b.button(text="🟩", callback_data="ignore")
+        else:
+            b.button(text="⬜️", callback_data=f"mines_open_{i}")
+    b.button(text=f"💰 ЗАБРАТЬ (x{multiplier:.2f})", callback_data="mines_cashout")
+    b.adjust(5, 5, 5, 5, 5, 1) # Сетка 5х5 + кнопка снизу
     return b.as_markup()
 
 def rocket_bet_kb() -> InlineKeyboardMarkup:
@@ -432,101 +448,186 @@ async def show_games(cb: types.CallbackQuery, state: FSMContext):
     await cb.message.edit_text("🎮 **Игровой зал**", reply_markup=games_menu_kb())
     await cb.answer()
 
-# --- КЕЙСЫ ЗА ТЫКВЫ ---
-@dp.callback_query(F.data == "case_menu")
-async def show_cases(cb: types.CallbackQuery):
+# --- ИГРА МИНЫ ---
+@dp.callback_query(F.data == "mines_menu")
+async def mines_menu(cb: types.CallbackQuery):
     await cb.message.edit_text(
-        "🎁 **Кейсы за тыквы**\n\n"
-        "Выбери свой трофей. Лимит: **10 кейсов** каждого типа.\n"
-        "Кулдаун между покупками: **5 секунд**.",
-        reply_markup=cases_menu_kb(),
+        "💣 **Игра «Мины»**\n\n"
+        "Выбери сложность. Чем больше мин, тем выше множитель (x).\n"
+        "Открывай безопасные клетки и забирай выигрыш!",
+        reply_markup=mines_difficulty_kb(),
         parse_mode="Markdown"
     )
     await cb.answer()
 
-@dp.callback_query(F.data.startswith("buy_case_"))
-async def buy_case(cb: types.CallbackQuery):
-    case_id = cb.data.replace("buy_case_", "")
-    
-    # 1. Мгновенно убираем кружок загрузки
-    try: await cb.answer("Крутим барабаны...")
-    except: pass
+@dp.callback_query(F.data.startswith("mines_diff_"))
+async def mines_difficulty(cb: types.CallbackQuery):
+    # Заглушка для выбора сложности (просто запоминаем сложность в стейте)
+    difficulty = cb.data.replace("mines_diff_", "")
+    await cb.message.edit_text(
+        f"💣 Ты выбрал режим: **{difficulty} мин**\n\n"
+        f"Введи сумму ставки (от 10 до 5000 тыкв):",
+        reply_markup=cancel_kb("mines_menu"),
+        parse_mode="Markdown"
+    )
+    # Сохраняем сложность в FSM
+    await state = dp.fsm.get_context(bot, cb.from_user.id, cb.message.chat.id)
+    await state.update_data(difficulty=int(difficulty))
+    await state.set_state(MinesGame.bet)
+    await cb.answer()
 
-    # 2. Проверка кулдауна (5 сек)
-    now = datetime.now()
-    async with db_pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT last_time FROM user_case_cd WHERE user_id = $1", cb.from_user.id)
-    if row and (now - row['last_time']).total_seconds() < 5:
-        rem = 5 - int((now - row['last_time']).total_seconds())
-        return await cb.answer(f"⏳ Подожди {rem} сек.", show_alert=True)
-        
-    # 3. Проверка лимита (10 шт)
-    async with db_pool.acquire() as conn:
-        count = await conn.fetchval("SELECT count FROM user_purchases WHERE user_id = $1 AND item_id = $2", cb.from_user.id, case_id)
-    if (count or 0) >= 10:
-        return await cb.answer("❌ Лимит 10 кейсов исчерпан!", show_alert=True)
-        
-    # 4. Данные кейсов
-    cases = {
-        "sosiska": {"price": 333, "name": "Сосиска"},
-        "tykva": {"price": 666, "name": "Тыква"}
+@dp.message(MinesGame.bet)
+async def mines_bet_input(message: types.Message, state: FSMContext):
+    try:
+        bet = int(message.text.strip())
+        if bet < 10 or bet > 5000: raise ValueError
+    except:
+        return await message.answer("❌ Введи сумму от 10 до 5000.")
+    
+    info = await get_user_info(message.from_user.id)
+    if info['balance'] < bet: return await message.answer("❌ Недостаточно тыкв!")
+    
+    data = await state.get_data()
+    difficulty = data.get("difficulty", 3) # по умолчанию 3
+    
+    # Списание ставки
+    await update_balance(message.from_user.id, "", -bet, is_spending=True)
+    
+    # Генерация поля с минами
+    total_cells = 25
+    mine_positions = random.sample(range(total_cells), difficulty)
+    
+    game_data = {
+        "type": "mines",
+        "bet": bet,
+        "mines": mine_positions,
+        "opened": [],
+        "difficulty": difficulty
     }
-    c_data = cases[case_id]
+    active_games[message.from_user.id] = game_data
     
-    # 5. Проверка баланса
-    info = await get_user_info(cb.from_user.id)
-    if info['balance'] < c_data["price"]:
-        return await cb.answer(f"❌ Недостаточно тыкв! Нужно {c_data['price']} 🎃.", show_alert=True)
+    multiplier = 1.0 # Начальный икс
+    text = (
+        f"💣 **Поле 5х5** (мин: {difficulty})\n"
+        f"💰 Ставка: {bet} 🎃\n"
+        f"📈 Множитель: **x{multiplier:.2f}**\n\n"
+        f"Открывай клетки:"
+    )
+    await message.answer(text, reply_markup=mines_board_kb([], multiplier))
+    await state.clear()
+
+@dp.callback_query(F.data.startswith("mines_open_"))
+async def mines_open_cell(cb: types.CallbackQuery):
+    user_id = cb.from_user.id
+    if user_id not in active_games or active_games[user_id]["type"] != "mines":
+        return await cb.answer("Игра не найдена.", show_alert=True)
         
-    # 6. Списание стоимости и обновление БД
-    await update_balance(cb.from_user.id, "", -c_data["price"], is_spending=True)
-    async with db_pool.acquire() as conn:
-        await conn.execute("INSERT INTO user_case_cd (user_id, last_time) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET last_time = $2", cb.from_user.id, now)
-        await conn.execute("INSERT INTO user_purchases (user_id, item_id, count) VALUES ($1, $2, 1) ON CONFLICT (user_id, item_id) DO UPDATE SET count = count + 1", cb.from_user.id, case_id)
+    game = active_games[user_id]
+    cell_index = int(cb.data.replace("mines_open_", ""))
+    
+    if cell_index in game["opened"]:
+        return await cb.answer("Эта клетка уже открыта.", show_alert=True)
         
-    # 7. Анимация
-    try:
+    if cell_index in game["mines"]:
+        # Взрыв
+        del active_games[user_id]
+        # Показываем все мины
+        b = InlineKeyboardBuilder()
+        for i in range(25):
+            if i in game["mines"]: b.button(text="💥", callback_data="ignore")
+            elif i in game["opened"]: b.button(text="🟩", callback_data="ignore")
+            else: b.button(text="⬜️", callback_data="ignore")
+        b.button(text="🔙 В меню", callback_data="games_menu")
+        b.adjust(5, 5, 5, 5, 5, 1)
+        
         await cb.message.edit_text(
-            f"🎁 **Кейс «{c_data['name']}» открывается...**\n\n"
-            f"💰 Списано: {c_data['price']} 🎃\n"
-            f"🎰 Ждём результат...",
-            reply_markup=None
+            f"💥 **БАБАХ! Ты подорвался!**\n\n"
+            f"Ставка: {game['bet']} 🎃 сгорела.\n\n"
+            f"🎃 Твой баланс: **{await get_user_info(user_id)['balance']}**.",
+            reply_markup=b.as_markup(), parse_mode="Markdown"
         )
-    except: pass
+        return await cb.answer("Взрыв!")
+        
+    # Безопасная клетка
+    game["opened"].append(cell_index)
     
-    await asyncio.sleep(1.5) # Ждем
+    # Пересчет множителя
+    total_cells = 25
+    mines = game["difficulty"]
+    opened_count = len(game["opened"])
+    safe_cells_total = total_cells - mines
+    safe_opened = opened_count
     
-    # 8. Генерация награды (ГАРАНТИРОВАННЫЙ МИНИМУМ 25)
-    r = random.random()
-    if case_id == "sosiska":
-        # Ставка 333
-        if r < 0.60: reward = random.randint(50, 150)
-        elif r < 0.85: reward = random.randint(151, 333)
-        elif r < 0.97: reward = random.randint(334, 600)
-        else: reward = random.randint(601, 800)
-    elif case_id == "tykva":
-        # Ставка 666
-        if r < 0.60: reward = random.randint(100, 300)
-        elif r < 0.85: reward = random.randint(301, 666)
-        elif r < 0.97: reward = random.randint(667, 1200)
-        else: reward = random.randint(1201, 1500)
-            
-    # 9. Начисление награды
-    new_bal = await update_balance(cb.from_user.id, "", reward)
+    # Математический пересчет множителя для честной игры
+    # Вероятность следующего шага = (безопасные_оставшиеся) / (всего_оставшихся)
+    # Множитель растет на 1/вероятность
+    # Для простоты используем формулу комбинаций или просто растущий коэффициент
+    # Упрощенная формула для бота:
+    multiplier = 1.0
+    for i in range(safe_opened):
+        multiplier *= (total_cells - i) / (safe_cells_total - i)
     
-    # 10. Финальный ответ
-    try:
+    # Немного уменьшаем икс (комиссия казино), чтобы бот не ушел в минус
+    multiplier *= 0.95 
+    
+    # Обновляем сообщение
+    if safe_opened == safe_cells_total:
+        # Игрок выиграл по максимуму
+        win = int(game["bet"] * multiplier)
+        new_bal = await update_balance(user_id, "", win)
+        del active_games[user_id]
         await cb.message.edit_text(
-            f"🎁 **Кейс «{c_data['name']}» открыт!**\n\n"
-            f"Тебе выпало: **{reward}** 🎃!\n\n"
-            f"🎃 Твой баланс: **{new_bal}**.\n"
-            f"Куплено кейсов: `{(count or 0) + 1}/10`",
-            reply_markup=games_menu_kb(), 
-            parse_mode="Markdown"
+            f"🎉 **ПОБЕДА! Ты открыл все безопасные клетки!**\n\n"
+            f"Выигрыш: **{win}** 🎃\n"
+            f"Баланс: **{new_bal}**.",
+            reply_markup=games_menu_kb(), parse_mode="Markdown"
         )
-    except Exception as e:
-        logging.error(f"Ошибка при отправке результата кейса: {e}")
-        await bot.send_message(cb.from_user.id, f"🎁 **Кейс открыт!**\nВыпало: **{reward}** 🎃\nБаланс: **{new_bal}**.", reply_markup=games_menu_kb())
+        return await cb.answer("Максимальный выигрыш!")
+    
+    # Продолжаем игру
+    text = (
+        f"💣 **Поле 5х5** (мин: {mines})\n"
+        f"💰 Ставка: {game['bet']} 🎃\n"
+        f"📈 Множитель: **x{multiplier:.2f}**\n\n"
+        f"Забрать сейчас: {int(game['bet'] * multiplier)} 🎃\n"
+        f"Продолжай или забирай:"
+    )
+    await cb.message.edit_text(text, reply_markup=mines_board_kb(game["opened"], multiplier), parse_mode="Markdown")
+    await cb.answer("Безопасно!")
+
+@dp.callback_query(F.data == "mines_cashout")
+async def mines_cashout(cb: types.CallbackQuery):
+    user_id = cb.from_user.id
+    if user_id not in active_games or active_games[user_id]["type"] != "mines":
+        return await cb.answer("Игра не найдена.", show_alert=True)
+        
+    game = active_games[user_id]
+    if not game["opened"]:
+        return await cb.answer("Сначала открой хотя бы одну клетку!", show_alert=True)
+        
+    del active_games[user_id]
+    
+    # Пересчитываем финальный икс
+    total_cells = 25
+    mines = game["difficulty"]
+    opened_count = len(game["opened"])
+    safe_cells_total = total_cells - mines
+    multiplier = 1.0
+    for i in range(opened_count):
+        multiplier *= (total_cells - i) / (safe_cells_total - i)
+    multiplier *= 0.95
+    
+    win = int(game["bet"] * multiplier)
+    new_bal = await update_balance(user_id, "", win)
+    
+    await cb.message.edit_text(
+        f"💰 **Ты забрал выигрыш!**\n\n"
+        f"Множитель: **x{multiplier:.2f}**\n"
+        f"Выигрыш: **{win}** 🎃\n"
+        f"🎃 Твой баланс: **{new_bal}**.",
+        reply_markup=games_menu_kb(), parse_mode="Markdown"
+    )
+    await cb.answer("Успел забрать!")
 
 # --- ОСТАЛЬНЫЕ ИГРЫ ---
 @dp.callback_query(F.data == "game_wheel")
@@ -635,14 +736,14 @@ async def start_rocket(user_id: int, bet: int, message: types.Message, cb: types
         msg = await message.answer(text, reply_markup=rocket_cashout_kb(), parse_mode="Markdown")
         
     task = asyncio.create_task(rocket_loop(user_id, bet, crash, msg))
-    active_games[user_id] = {"bet": bet, "mult": 1.0, "crash": crash, "task": task, "msg": msg}
+    active_games[user_id] = {"bet": bet, "mult": 1.0, "crash": crash, "task": task, "msg": msg, "type": "rocket"}
 
 async def rocket_loop(user_id: int, bet: int, crash: float, msg: types.Message):
     mult = 1.0
     try:
         while True:
             await asyncio.sleep(1)
-            if user_id not in active_games: return
+            if user_id not in active_games or active_games[user_id].get("type") != "rocket": return
             mult += 0.2
             if mult >= crash:
                 del active_games[user_id]
@@ -662,7 +763,8 @@ async def rocket_loop(user_id: int, bet: int, crash: float, msg: types.Message):
 @dp.callback_query(F.data == "rocket_cashout")
 async def rocket_cashout(cb: types.CallbackQuery):
     user_id = cb.from_user.id
-    if user_id not in active_games: return await cb.answer("Игра окончена!", show_alert=True)
+    if user_id not in active_games or active_games[user_id].get("type") != "rocket": 
+        return await cb.answer("Игра окончена!", show_alert=True)
     
     game = active_games.pop(user_id)
     game["task"].cancel()
