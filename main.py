@@ -308,7 +308,7 @@ def games_menu_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text="🚀 Ракета (x2, x3...)", callback_data="game_rocket")
     b.button(text="🍬 Сладость или Гадость", callback_data="game_trickortreat")
-    b.button(text="📈 Обгрейдер", callback_data="game_upgrader") # Новая кнопка
+    b.button(text="📈 Апгрейдер", callback_data="game_upgrader")
     b.button(text="🔙 Назад в меню", callback_data="back_to_main")
     b.adjust(1)
     return b.as_markup()
@@ -331,8 +331,8 @@ def rocket_cashout_kb() -> InlineKeyboardMarkup:
 
 def upgrader_choice_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="⚡ Быстро (Шанс 40%, x2)", callback_data="upgrade_fast")
-    b.button(text="🐢 Медленно (Шанс 70%, x1.5)", callback_data="upgrade_slow")
+    b.button(text="⚡ Быстро (Шанс 35%, x2)", callback_data="upgrade_fast")
+    b.button(text="🐢 Медленно (Шанс 60%, x1.5)", callback_data="upgrade_slow")
     b.button(text="🔙 Назад", callback_data="games_menu")
     b.adjust(1)
     return b.as_markup()
@@ -719,12 +719,12 @@ async def rocket_cashout(cb: types.CallbackQuery):
     )
     await cb.answer("Тыквы у тебя в котле!")
 
-# --- ОБГРЕЙДЕР ---
+# --- АПГРЕЙДЕР ---
 @dp.callback_query(F.data == "game_upgrader")
 async def upgrader_start(cb: types.CallbackQuery, state: FSMContext):
     await state.set_state(Upgrader.amount)
     await cb.message.edit_text(
-        "📈 **Обгрейдер**\n\n"
+        "📈 **Апгрейдер**\n\n"
         "Введи сумму в тыквах, которую хочешь поставить:",
         reply_markup=cancel_upgrader_kb()
     )
@@ -745,7 +745,7 @@ async def upgrader_amount(message: types.Message, state: FSMContext):
     await state.update_data(bet=bet)
     await message.answer(
         f"📈 Ставка: **{bet}** 🎃.\n\n"
-        f"Выбери режим обгрейда:",
+        f"Выбери режим апгрейда:",
         reply_markup=upgrader_choice_kb(),
         parse_mode="Markdown"
     )
@@ -758,17 +758,16 @@ async def upgrader_fast(cb: types.CallbackQuery, state: FSMContext):
         return await cb.answer("Сессия устарела. Начни заново.", show_alert=True)
     await state.clear()
     
-    # Списываем ставку сразу
     update_balance(cb.from_user.id, "", -bet)
     
-    # Шанс 40% на успех (x2)
-    if random.random() < 0.4:
+    # Шанс 35% на успех (x2)
+    if random.random() < 0.35:
         win_amount = bet * 2
         new_balance = update_balance(cb.from_user.id, "", win_amount)
-        text = f"🎉 **Вы выиграли!**\n\nСтавка: {bet} 🎃\nВыигрыш: **+{win_amount}** 🎃 (x2)\n\n🎃 Ваш баланс: **{new_balance}**."
+        text = f"🎉 **Вы выиграли!**\n\nСтавка: {bet} 🎃\nВыигрыш: **+{win_amount}** 🎃 (x2)\n\n🎃 Ваш баланс: **{new_balance}**.\n\nХотите еще?"
     else:
         new_balance = get_balance(cb.from_user.id)
-        text = f"💀 **Вы проиграли!**\n\nСтавка: {bet} 🎃 сгорела.\n\n🎃 Ваш баланс: **{new_balance}**."
+        text = f"💀 **Вы проиграли!**\n\nСтавка: {bet} 🎃 сгорела.\n\n🎃 Ваш баланс: **{new_balance}**.\n\nХотите еще раз?"
         
     await cb.message.edit_text(text, reply_markup=upgrader_retry_kb(), parse_mode="Markdown")
     await cb.answer()
@@ -783,14 +782,14 @@ async def upgrader_slow(cb: types.CallbackQuery, state: FSMContext):
     
     update_balance(cb.from_user.id, "", -bet)
     
-    # Шанс 70% на успех (x1.5)
-    if random.random() < 0.7:
+    # Шанс 60% на успех (x1.5)
+    if random.random() < 0.6:
         win_amount = int(bet * 1.5)
         new_balance = update_balance(cb.from_user.id, "", win_amount)
-        text = f"🎉 **Вы выиграли!**\n\nСтавка: {bet} 🎃\nВыигрыш: **+{win_amount}** 🎃 (x1.5)\n\n🎃 Ваш баланс: **{new_balance}**."
+        text = f"🎉 **Вы выиграли!**\n\nСтавка: {bet} 🎃\nВыигрыш: **+{win_amount}** 🎃 (x1.5)\n\n🎃 Ваш баланс: **{new_balance}**.\n\nХотите еще?"
     else:
         new_balance = get_balance(cb.from_user.id)
-        text = f"💀 **Вы проиграли!**\n\nСтавка: {bet} 🎃 сгорела.\n\n🎃 Ваш баланс: **{new_balance}**."
+        text = f"💀 **Вы проиграли!**\n\nСтавка: {bet} 🎃 сгорела.\n\n🎃 Ваш баланс: **{new_balance}**.\n\nХотите еще раз?"
         
     await cb.message.edit_text(text, reply_markup=upgrader_retry_kb(), parse_mode="Markdown")
     await cb.answer()
@@ -942,7 +941,6 @@ async def handle_quest(cb: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("proof_sent_"))
 async def handle_proof(cb: types.CallbackQuery):
-    # ИСПРАВЛЕНО: корректный парсинг ключа квеста
     quest_key = cb.data.replace("proof_sent_", "")
     quest = QUEST_POOL.get(quest_key)
     if not quest: return await cb.answer("Ошибка: квест не найден.", show_alert=True)
