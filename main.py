@@ -26,7 +26,7 @@ from aiohttp import web
 TOKEN = os.environ.get("BOT_TOKEN", "")
 API_BASE = os.environ.get("API_BASE", "https://misugram.cloud-ip.cc")
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
-if not DATABASE_URL: raise RuntimeError("DATABASE_URL не задан в переменных окружения!")
+if not DATABASE_URL: raise RuntimeError("DATABASE_URL не задан!")
 
 ADMIN_USERNAME = "sardelka"
 DEFAULT_ADMINS = {1780243203, 1780243210}
@@ -38,7 +38,7 @@ active_games = {}
 # --- БАЗА ДАННЫХ ---
 async def init_db():
     global db_pool
-    # ВАЖНО: ssl='require' обязателен для Supabase!
+    # ssl='require' обязателен для Supabase!
     db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5, ssl='require')
     async with db_pool.acquire() as conn:
         await conn.execute("CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY, username TEXT, balance BIGINT DEFAULT 0, spent BIGINT DEFAULT 0, registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
@@ -757,4 +757,179 @@ async def admin_all_bals(cb: types.CallbackQuery):
 
 @dp.callback_query(F.data == "admin_check_bal")
 async def admin_check_bal(cb: types.CallbackQuery, state: FSMContext):
-    if not await is_admin_db
+    if not await is_admin_db(cb.from_user.id): return await cb.answer("Нет.", show_alert=True)
+    await state.set_state(AdminViewBalance.target)
+    await cb.message.edit_text("👁 Введи ID/username:", reply_markup=cancel_kb())
+    await cb.answer()
+
+@dp.message(AdminViewBalance.target)
+async def admin_check_bal_input(message: types.Message, state: FSMContext):
+    t = await find_user_id(message.text)
+    if not t: return await message.answer("Не найден.")
+    await state.clear()
+    info = await get_user_info(t)
+    await message.answer(f"👁 Баланс `{t}`: **{info['balance'] if info else 0}** 🎃", reply_markup=admin_kb(), parse_mode="Markdown")
+
+@dp.callback_query(F.data == "admin_grant")
+async def admin_grant(cb: types.CallbackQuery, state: FSMContext):
+    if not await is_admin_db(cb.from_user.id): return await cb.answer("Нет.", show_alert=True)
+    await state.set_state(GrantAdmin.target_id)
+    await cb.message.edit_text("👑 ID/username нового админа:", reply_markup=cancel_kb())
+    await cb.answer()
+
+@dp.message(GrantAdmin.target_id)
+async def admin_grant_input(message: types.Message, state: FSMContext):
+    t = await find_user_id(message.text)
+    if not t: return await message.answer("Не найден.")
+    await state.clear()
+    async with db_pool.acquire() as conn:
+        await conn.execute("INSERT INTO admins (user_id) VALUES ($1) ON CONFLICT DO NOTHING", t)
+    await message.answer(f"✅ `{t}` теперь Мастер!", reply_markup=admin_kb())
+
+@dp.callback_query(F.data == "admin_give")
+async def admin_give(cb: types.CallbackQuery, state: FSMContext):
+    if not await is_admin_db(cb.from_user.id): return await cb.answer("Нет.", show_alert=True)
+    await state.update_data(action="give")
+    await state.set_state(AdminAmount.target_id)
+    await cb.message.edit_text("🪄 Кому (ID/username):", reply_markup=cancel_kb())
+    await cb.answer()
+
+@dp.callback_query(F.data == "admin_take")
+async def admin_take(cb: types.CallbackQuery, state: FSMContext):
+    if not await is_admin_db(cb.from_user.id): return await cb.answer("Нет.", show_alert=True)
+    await state.update_data(action="take")
+    await state.set_state(AdminAmount.target_id)
+    await cb.message.edit_text("🪓 У кого (ID/username):", reply_markup=cancel_kb())
+    await cb.answer()
+
+@dp.message(AdminAmount.target_id)
+async def admin_target_input(message: types.Message, state: FSMContext):
+    t = await find_user_id(message.text)
+    if not t: return await message.answer("Не найден.")
+    await state.update_data(target=t)
+    await state.set_state(AdminAmount.amount)
+    await message.answer("Сколько тыкв?", reply_markup=cancel_kb())
+
+@dp.message(AdminAmount.amount)
+async def admin_amt_input(message: types.Message, state: FSMContext):
+    try: a = abs(int(message.text.strip()))
+    except: return await message.answer("Число.")
+    d = await state.get_data()
+    t, act = d["target"], d["action"]
+    await state.clear()
+    final = a if act == "give" else -a
+    new = await update_balance(t, "", final)
+    await message.answer(f"✅ Готово. Баланс: {new} 🎃", reply_markup=admin_kb())
+    try: await bot.send_message(t, f"Баланс изменен на {final} 🎃.")
+    except: pass
+
+@dp.callback_query(F.data == "admin_give_all")
+async def admin_give_all(cb: types.CallbackQuery, state: FSMContext):
+    if not await is_admin_db(cb.from_user.id): return await cb.answer("Нет.", show_alert=True)
+    await state.set_state(AdminGiveAll.amount)
+    await cb.message.edit_text("🪄 Сколько начислить ВСЕМ?", reply_markup=cancel_kb())
+    await cb.answer()
+
+@dp.message(AdminGiveAll.amount)
+async def admin_give_all_input(message: types.Message, state: FSMContext):
+    try: a = int(message.text.strip())
+    except: return await message.answer("Число.")
+    if a <= 0: return await message.answer(">0.")
+    await state.clear()
+    users = await get_all_users()
+    await message.answer(f"🚀 Начисляю {a} тыкв для {len(users)}...")
+    for u in users:
+        await update_balance(u, "", a)
+        try: await bot.send_message(u, f"🎁 Дар! +{a} 🎃")
+        except: pass
+        await asyncio.sleep(0.05)
+    await message.answer("✅ Готово!", reply_markup=admin_kb())
+
+@dp.callback_query(F.data == "admin_take_all")
+async def admin_take_all(cb: types.CallbackQuery, state: FSMContext):
+    if not await is_admin_db(cb.from_user.id): return await cb.answer("Нет.", show_alert=True)
+    await state.set_state(AdminTakeAll.amount)
+    await cb.message.edit_text("🪓 Сколько отобрать У ВСЕХ?", reply_markup=cancel_kb())
+    await cb.answer()
+
+@dp.message(AdminTakeAll.amount)
+async def admin_take_all_input(message: types.Message, state: FSMContext):
+    try: a = abs(int(message.text.strip()))
+    except: return await message.answer("Число.")
+    await state.clear()
+    users = await get_all_users()
+    await message.answer(f"🚀 Списываю {a} тыкв у {len(users)}...")
+    for u in users:
+        await update_balance(u, "", -a, is_spending=True)
+        try: await bot.send_message(u, f"🪓 Гнев Мастера! -{a} 🎃")
+        except: pass
+        await asyncio.sleep(0.05)
+    await message.answer("✅ Готово!", reply_markup=admin_kb())
+
+@dp.callback_query(F.data == "admin_gift_all")
+async def admin_gift_all(cb: types.CallbackQuery):
+    if not await is_admin_db(cb.from_user.id): return await cb.answer("Нет.", show_alert=True)
+    await cb.message.edit_text("🎁 Выбери подарок:", reply_markup=admin_gift_choice_kb())
+    await cb.answer()
+
+@dp.callback_query(F.data.startswith("send_gift_"))
+async def send_gift(cb: types.CallbackQuery):
+    if not await is_admin_db(cb.from_user.id): return await cb.answer("Нет.", show_alert=True)
+    gid = cb.data.replace("send_gift_", "")
+    users = await get_all_users()
+    await cb.message.edit_text(f"🚀 Рассылка подарка `{gid}` для {len(users)}...")
+    s, f = 0, 0
+    for u in users:
+        try:
+            await bot.send_gift(user_id=u, gift_id=gid)
+            s += 1
+        except: f += 1
+        await asyncio.sleep(0.5)
+    await cb.message.answer(f"✅ Отправлено: {s}\nОшибок: {f}", reply_markup=admin_kb())
+
+@dp.callback_query(F.data == "admin_cancel")
+async def admin_cancel(cb: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await cb.message.edit_text("💀 Панель:", reply_markup=admin_kb())
+    await cb.answer("Отменено")
+
+@dp.message(F.text.startswith("/approve "))
+async def cmd_approve(message: types.Message):
+    if not await is_admin_db(message.from_user.id): return
+    pid = int(message.text.split()[1])
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT user_id, quest_name FROM quest_proofs WHERE id = $1", pid)
+        if not row: return await message.answer("Не найдено.")
+        reward = next((q["reward"] for q in QUEST_POOL.values() if q["name"] == row['quest_name']), 0)
+        await conn.execute("UPDATE quest_proofs SET status='approved' WHERE id=$1", pid)
+    await update_balance(row['user_id'], "", reward)
+    await message.answer(f"✅ Начислено {reward}.")
+    try: await bot.send_message(row['user_id'], f"Квест {row['quest_name']} подтвержден! +{reward} 🎃.")
+    except: pass
+
+@dp.message(F.text.startswith("/reject "))
+async def cmd_reject(message: types.Message):
+    if not await is_admin_db(message.from_user.id): return
+    pid = int(message.text.split()[1])
+    async with db_pool.acquire() as conn:
+        await conn.execute("UPDATE quest_proofs SET status='rejected' WHERE id=$1", pid)
+    await message.answer("Заявка отклонена.")
+
+# --- СЕРВЕР ---
+async def healthcheck(request): return web.Response(text="OK")
+
+async def main():
+    if not TOKEN: raise RuntimeError("BOT_TOKEN не задан")
+    await init_db()
+    
+    app = web.Application()
+    app.router.add_get("/healthcheck", healthcheck)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", 8080)))
+    await site.start()
+    
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
