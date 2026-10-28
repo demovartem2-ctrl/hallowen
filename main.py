@@ -356,7 +356,7 @@ def quests_kb(user_id: int) -> InlineKeyboardMarkup:
         else:
             b.button(text=f"🎁 {q['name']} (+{q['reward']} тыкв)", callback_data=f"quest_{qid}")
             
-    b.button(text="📜 Доп. квесты", callback_data="extra_quests") # Новая кнопка
+    b.button(text="📜 Доп. квесты", callback_data="extra_quests")
     b.button(text="🔙 Назад в меню", callback_data="back_to_main")
     b.adjust(1)
     return b.as_markup()
@@ -377,7 +377,7 @@ def admin_kb() -> InlineKeyboardMarkup:
     b.button(text="📊 Балансы всех", callback_data="admin_all_bals")
     b.button(text="📜 Свитки (заявки)", callback_data="admin_pending")
     b.button(text="👑 Выдать админку", callback_data="admin_grant")
-    b.button(text="📢 Сообщение всем", callback_data="admin_broadcast") # Новая кнопка
+    b.button(text="📢 Сообщение всем", callback_data="admin_broadcast")
     b.button(text="🔙 В главное меню", callback_data="back_to_main")
     b.adjust(1)
     return b.as_markup()
@@ -670,4 +670,6 @@ async def transfer_start(cb: types.CallbackQuery, state: FSMContext):
 async def transfer_target(message: types.Message, state: FSMContext):
     target_id = find_user_id(message.text)
     if not target_id: return await message.answer("❌ Пользователь не найден в базе бота.")
-    if target_id ==
+    if target_id == message.from_user.id: return await message.answer("❌ Нельзя перевести тыквы самому себе.")
+    await state.update_data(target=target_id)
+    await state.set_state(TransferP
