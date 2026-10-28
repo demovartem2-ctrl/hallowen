@@ -38,7 +38,6 @@ active_games = {}
 # --- БАЗА ДАННЫХ ---
 async def init_db():
     global db_pool
-    # ssl='require' обязателен для Supabase!
     db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5, ssl='require')
     async with db_pool.acquire() as conn:
         await conn.execute("CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY, username TEXT, balance BIGINT DEFAULT 0, spent BIGINT DEFAULT 0, registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
@@ -58,18 +57,29 @@ async def get_user_info(user_id: int):
     async with db_pool.acquire() as conn:
         return await conn.fetchrow("SELECT username, balance, spent, registered_at FROM users WHERE user_id = $1", user_id)
 
+# ИЗМЕНЕННАЯ ФУНКЦИЯ: Баланс не может уйти в минус (нижний порог 0), но верхнего лимита нет
 async def update_balance(user_id: int, username: str, amount: int, is_spending: bool = False) -> int:
     async with db_pool.acquire() as conn:
         row = await conn.fetchrow("SELECT balance, spent FROM users WHERE user_id = $1", user_id)
         if row:
-            new_bal = row['balance'] + amount
-            new_spent = row['spent'] + (abs(amount) if is_spending and amount < 0 else 0)
+            current_bal = row['balance']
+            raw_new_bal = current_bal + amount
+            
+            # Защита от минуса
+            new_bal = max(0, raw_new_bal)
+            
+            # Считаем, сколько реально изменилось (для статистики трат)
+            actual_change = new_bal - current_bal
+            new_spent = row['spent'] + (abs(actual_change) if is_spending and actual_change < 0 else 0)
+            
             await conn.execute("UPDATE users SET balance = $1, spent = $2, username = COALESCE($3, username) WHERE user_id = $4", new_bal, new_spent, username, user_id)
             return new_bal
         else:
-            new_spent = abs(amount) if is_spending and amount < 0 else 0
-            await conn.execute("INSERT INTO users (user_id, username, balance, spent) VALUES ($1, $2, $3, $4)", user_id, username, amount, new_spent)
-            return amount
+            # Если игрока нет, создаем и защищаем от минуса
+            new_bal = max(0, amount)
+            new_spent = abs(new_bal) if is_spending and new_bal < 0 else 0
+            await conn.execute("INSERT INTO users (user_id, username, balance, spent) VALUES ($1, $2, $3, $4)", user_id, username, new_bal, new_spent)
+            return new_bal
 
 def is_admin_check(user_id: int) -> bool:
     return user_id in DEFAULT_ADMINS
@@ -93,7 +103,6 @@ async def get_all_users():
         rows = await conn.fetch("SELECT user_id FROM users")
     return [r['user_id'] for r in rows]
 
-# НОВАЯ ФУНКЦИЯ: Подсчет всех пользователей
 async def get_total_users_count() -> int:
     async with db_pool.acquire() as conn:
         count = await conn.fetchval("SELECT COUNT(*) FROM users")
@@ -287,7 +296,7 @@ def admin_kb() -> InlineKeyboardMarkup:
     b.button(text="🪄 Начислить всем", callback_data="admin_give_all")
     b.button(text="🪓 Отобрать у всех", callback_data="admin_take_all")
     b.button(text="🎁 Подарки", callback_data="admin_gift_all")
-    b.button(text="👥 Всего юзеров", callback_data="admin_users_count") # НОВАЯ КНОПКА
+    b.button(text="👥 Всего юзеров", callback_data="admin_users_count")
     b.button(text="👁 Баланс юзера", callback_data="admin_check_bal")
     b.button(text="📊 Балансы всех", callback_data="admin_all_bals")
     b.button(text="📜 Заявки", callback_data="admin_pending")
@@ -745,7 +754,6 @@ async def admin_panel(cb: types.CallbackQuery):
     await cb.message.edit_text("💀 **Панель Мастера**", reply_markup=admin_kb())
     await cb.answer()
 
-# НОВЫЙ ОБРАБОТЧИК ДЛЯ ПОДСЧЕТА ЮЗЕРОВ
 @dp.callback_query(F.data == "admin_users_count")
 async def admin_users_count(cb: types.CallbackQuery):
     if not await is_admin_db(cb.from_user.id): return await cb.answer("Нет доступа.", show_alert=True)
