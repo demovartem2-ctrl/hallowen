@@ -221,7 +221,7 @@ def cases_menu_kb() -> InlineKeyboardMarkup:
     b.button(text="🌭 Сосиска (333 🎃) [до 800]", callback_data="buy_case_sosiska")
     b.button(text="🕸️ Паутина (150 🎃) [до 400]", callback_data="buy_case_pautina")
     b.button(text="🎃 Тыква (666 🎃) [до 1500]", callback_data="buy_case_tykva")
-    b.button(text="👻 Страшный мисс (777 🎃) [до 1900]", callback_data="buy_case_strashny") # НОВЫЙ КЕЙС
+    b.button(text="👻 Страшный мисс (777 🎃) [до 1900]", callback_data="buy_case_strashny")
     b.button(text="🔙 Назад", callback_data="games_menu")
     b.adjust(1)
     return b.as_markup()
@@ -450,7 +450,11 @@ async def show_cases(cb: types.CallbackQuery):
 async def buy_case(cb: types.CallbackQuery):
     case_id = cb.data.replace("buy_case_", "")
     
-    # 1. Проверка кулдауна (5 сек)
+    # 1. Мгновенно убираем кружок загрузки
+    try: await cb.answer("Крутим барабаны...")
+    except: pass
+
+    # 2. Проверка кулдауна (5 сек)
     now = datetime.now()
     async with db_pool.acquire() as conn:
         row = await conn.fetchrow("SELECT last_time FROM user_case_cd WHERE user_id = $1", cb.from_user.id)
@@ -458,13 +462,13 @@ async def buy_case(cb: types.CallbackQuery):
         rem = 5 - int((now - row['last_time']).total_seconds())
         return await cb.answer(f"⏳ Подожди {rem} сек.", show_alert=True)
         
-    # 2. Проверка лимита (10 шт)
+    # 3. Проверка лимита (10 шт)
     async with db_pool.acquire() as conn:
         count = await conn.fetchval("SELECT count FROM user_purchases WHERE user_id = $1 AND item_id = $2", cb.from_user.id, case_id)
     if (count or 0) >= 10:
         return await cb.answer("❌ Лимит 10 кейсов исчерпан!", show_alert=True)
         
-    # 3. Данные кейсов
+    # 4. Данные кейсов
     cases = {
         "pautina": {"price": 150, "name": "Паутина", "max": 400},
         "sosiska": {"price": 333, "name": "Сосиска", "max": 800},
@@ -473,19 +477,18 @@ async def buy_case(cb: types.CallbackQuery):
     }
     c_data = cases[case_id]
     
-    # 4. Проверка баланса
+    # 5. Проверка баланса
     info = await get_user_info(cb.from_user.id)
     if info['balance'] < c_data["price"]:
         return await cb.answer(f"❌ Недостаточно тыкв! Нужно {c_data['price']} 🎃.", show_alert=True)
         
-    # 5. Списание стоимости и обновление БД (сразу, чтобы не было дыр)
+    # 6. Списание стоимости и обновление БД
     await update_balance(cb.from_user.id, "", -c_data["price"], is_spending=True)
     async with db_pool.acquire() as conn:
         await conn.execute("INSERT INTO user_case_cd (user_id, last_time) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET last_time = $2", cb.from_user.id, now)
         await conn.execute("INSERT INTO user_purchases (user_id, item_id, count) VALUES ($1, $2, 1) ON CONFLICT (user_id, item_id) DO UPDATE SET count = count + 1", cb.from_user.id, case_id)
         
-    # 6. Анимация открытия (уведомление)
-    await cb.answer(f"🎰 Крутим барабаны...", show_alert=False)
+    # 7. Анимация
     try:
         await cb.message.edit_text(
             f"🎁 **Кейс «{c_data['name']}» открывается...**\n\n"
@@ -495,9 +498,9 @@ async def buy_case(cb: types.CallbackQuery):
         )
     except: pass
     
-    await asyncio.sleep(1.5) # Ждем 1.5 секунды для эффекта
+    await asyncio.sleep(1.5) # Ждем
     
-    # 7. Генерация награды
+    # 8. Генерация награды
     r = random.random()
     if case_id == "pautina":
         if r < 0.5: reward = random.randint(10, 50)
@@ -524,10 +527,10 @@ async def buy_case(cb: types.CallbackQuery):
         elif r < 0.995: reward = random.randint(1201, 1500)
         else: reward = random.randint(1501, 1900)
             
-    # 8. Начисление награды
+    # 9. Начисление награды
     new_bal = await update_balance(cb.from_user.id, "", reward)
     
-    # 9. Финальный ответ (новым сообщением, чтобы избежать ошибок edit_text)
+    # 10. Финальный ответ
     try:
         await cb.message.edit_text(
             f"🎁 **Кейс «{c_data['name']}» открыт!**\n\n"
