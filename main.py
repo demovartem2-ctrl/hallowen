@@ -29,10 +29,7 @@ API_BASE = os.environ.get("API_BASE", "https://misugram.cloud-ip.cc")
 ADMIN_USERNAME = "sardelka"
 DEFAULT_ADMINS = {1780243203, 1780243210}
 
-# НОВЫЙ ПУТЬ: Безопасная папка внутри проекта
-DB_DIR = "/opt/render/project/src/data"
-DB_FILE = os.path.join(DB_DIR, "halloween_bot.db")
-
+DB_FILE = "halloween_bot.db"
 active_games = {}
 
 GIFT_IDS = [
@@ -75,45 +72,57 @@ def get_all_users():
 
 # --- БАЗА ДАННЫХ ---
 def init_db():
-    # Создаем папку data, если ее нет
-    os.makedirs(DB_DIR, exist_ok=True)
-    
     conn = sqlite3.connect(DB_FILE)
     cur = conn.cursor()
-    cur.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT, balance INTEGER DEFAULT 0)")
+    cur.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, username TEXT, balance INTEGER DEFAULT 0, spent INTEGER DEFAULT 0, registered_at TEXT)")
     cur.execute("CREATE TABLE IF NOT EXISTS quest_proofs (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, quest_name TEXT, proof_text TEXT, status TEXT DEFAULT 'pending', created_at TEXT)")
     cur.execute("CREATE TABLE IF NOT EXISTS user_purchases (user_id INTEGER, item_id TEXT, count INTEGER DEFAULT 0, PRIMARY KEY (user_id, item_id))")
     cur.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
     cur.execute("CREATE TABLE IF NOT EXISTS user_quest_completions (user_id INTEGER, quest_id TEXT, completed_at TEXT)")
     cur.execute("CREATE TABLE IF NOT EXISTS admins (user_id INTEGER PRIMARY KEY)")
-    cur.execute("CREATE TABLE IF NOT EXISTS user_bonuses (user_id INTEGER PRIMARY KEY, last_claim TEXT)")
+    cur.execute("CREATE TABLE IF NOT EXISTS user_bonuses (user_id INTEGER PRIMARY KEY, last_claim TEXT, streak INTEGER DEFAULT 0)")
     cur.execute("CREATE TABLE IF NOT EXISTS user_trickortreat (user_id INTEGER PRIMARY KEY, last_played TEXT)")
+    cur.execute("CREATE TABLE IF NOT EXISTS user_wheel_cd (user_id INTEGER PRIMARY KEY, last_played TEXT)")
     
+    try: cur.execute("ALTER TABLE users ADD COLUMN spent INTEGER DEFAULT 0")
+    except: pass
+    try: cur.execute("ALTER TABLE users ADD COLUMN registered_at TEXT")
+    except: pass
+    try: cur.execute("ALTER TABLE user_bonuses ADD COLUMN streak INTEGER DEFAULT 0")
+    except: pass
+
     for admin_id in DEFAULT_ADMINS:
         cur.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (admin_id,))
     conn.commit()
     conn.close()
 
-def get_balance(user_id: int) -> int:
+def get_user_info(user_id: int):
     conn = sqlite3.connect(DB_FILE)
     cur = conn.cursor()
-    cur.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
+    cur.execute("SELECT username, balance, spent, registered_at FROM users WHERE user_id = ?", (user_id,))
     row = cur.fetchone()
     conn.close()
-    return row[0] if row else 0
+    return row
 
-def update_balance(user_id: int, username: str, amount: int) -> int:
+def update_balance(user_id: int, username: str, amount: int, is_spending: bool = False) -> int:
     conn = sqlite3.connect(DB_FILE)
     cur = conn.cursor()
-    cur.execute("SELECT balance, username FROM users WHERE user_id = ?", (user_id,))
+    cur.execute("SELECT balance, spent, registered_at FROM users WHERE user_id = ?", (user_id,))
     row = cur.fetchone()
+    
+    now_str = datetime.now().isoformat()
     if row:
         new_balance = row[0] + amount
-        uname = username or row[1]
-        cur.execute("UPDATE users SET balance = ?, username = ? WHERE user_id = ?", (new_balance, uname, user_id))
+        new_spent = (row[1] or 0) + abs(amount) if is_spending and amount < 0 else (row[1] or 0)
+        reg = row[2] or now_str
+        uname = username or ""
+        cur.execute("UPDATE users SET balance = ?, spent = ?, registered_at = ?, username = ? WHERE user_id = ?", 
+                    (new_balance, new_spent, reg, uname, user_id))
     else:
         new_balance = amount
-        cur.execute("INSERT INTO users (user_id, username, balance) VALUES (?, ?, ?)", (user_id, username, new_balance))
+        new_spent = abs(amount) if is_spending and amount < 0 else 0
+        cur.execute("INSERT INTO users (user_id, username, balance, spent, registered_at) VALUES (?, ?, ?, ?, ?)", 
+                    (user_id, username, new_balance, new_spent, now_str))
     conn.commit()
     conn.close()
     return new_balance
@@ -192,40 +201,6 @@ def find_user_id(identifier: str) -> Optional[int]:
         if row: return row[0]
     return None
 
-def get_last_bonus(user_id: int) -> Optional[datetime]:
-    conn = sqlite3.connect(DB_FILE)
-    cur = conn.cursor()
-    cur.execute("SELECT last_claim FROM user_bonuses WHERE user_id = ?", (user_id,))
-    row = cur.fetchone()
-    conn.close()
-    if row: return datetime.fromisoformat(row[0])
-    return None
-
-def set_bonus_claimed(user_id: int):
-    now_str = datetime.now().isoformat()
-    conn = sqlite3.connect(DB_FILE)
-    cur = conn.cursor()
-    cur.execute("INSERT INTO user_bonuses (user_id, last_claim) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_claim = ?", (user_id, now_str, now_str))
-    conn.commit()
-    conn.close()
-
-def get_last_trickortreat(user_id: int) -> Optional[datetime]:
-    conn = sqlite3.connect(DB_FILE)
-    cur = conn.cursor()
-    cur.execute("SELECT last_played FROM user_trickortreat WHERE user_id = ?", (user_id,))
-    row = cur.fetchone()
-    conn.close()
-    if row: return datetime.fromisoformat(row[0])
-    return None
-
-def set_trickortreat_played(user_id: int):
-    now_str = datetime.now().isoformat()
-    conn = sqlite3.connect(DB_FILE)
-    cur = conn.cursor()
-    cur.execute("INSERT INTO user_trickortreat (user_id, last_played) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_played = ?", (user_id, now_str, now_str))
-    conn.commit()
-    conn.close()
-
 # --- ПУЛ КВЕСТОВ ---
 QUEST_POOL = {
     "q1": {"name": "Раздай 5 подарков", "reward": 25, "desc": "Раздай 5 подарков друзьям или в чатах."},
@@ -295,6 +270,7 @@ def main_menu_kb(user: types.User) -> InlineKeyboardMarkup:
     b.button(text="🕸️ Квесты", callback_data="quest_menu")
     b.button(text="💰 Связанное с балансом", callback_data="balance_menu")
     b.button(text="🎮 Мини-игры", callback_data="games_menu")
+    b.button(text="📊 Профиль", callback_data="show_profile")
     b.button(text="🏆 Зал славы", callback_data="show_top")
     b.button(text="🎁 Бонус", callback_data="daily_bonus")
     b.button(text="🆔 Мой ID", callback_data="show_my_id")
@@ -319,6 +295,7 @@ def games_menu_kb() -> InlineKeyboardMarkup:
     b.button(text="🚀 Ракета (x2, x3...)", callback_data="game_rocket")
     b.button(text="🍬 Сладость или Гадость", callback_data="game_trickortreat")
     b.button(text="📈 Апгрейдер", callback_data="game_upgrader")
+    b.button(text="🎡 Колесо Фортуны (20 🎃)", callback_data="game_wheel")
     b.button(text="🔙 Назад в меню", callback_data="back_to_main")
     b.adjust(1)
     return b.as_markup()
@@ -523,10 +500,41 @@ async def show_balance_menu(cb: types.CallbackQuery):
 
 @dp.callback_query(F.data == "show_balance")
 async def show_balance(cb: types.CallbackQuery):
-    balance = get_balance(cb.from_user.id)
+    info = get_user_info(cb.from_user.id)
+    balance = info[1] if info else 0
     await cb.message.edit_text(
         f"🎃 В твоём котле сейчас: **{balance}** тыкв.\n\n🕷️ Береги их...",
         reply_markup=balance_menu_kb(), parse_mode="Markdown",
+    )
+    await cb.answer()
+
+# --- ПРОФИЛЬ ---
+@dp.callback_query(F.data == "show_profile")
+async def show_profile(cb: types.CallbackQuery):
+    user_id = cb.from_user.id
+    info = get_user_info(user_id)
+    if not info:
+        return await cb.answer("Ошибка профиля", show_alert=True)
+    
+    username, balance, spent, reg_date = info
+    spent = spent or 0
+    
+    level = (spent // 500) + 1
+    level_titles = ["🥚 Новичок", "🎃 Любитель", "🦇 Охотник", "💀 Мастер", "👑 Король Тьмы"]
+    title = level_titles[min(level-1, len(level_titles)-1)]
+    
+    reg_str = datetime.fromisoformat(reg_date).strftime("%d.%m.%Y") if reg_date else "Неизвестно"
+    
+    await cb.message.edit_text(
+        f"📊 **Твой профиль**\n\n"
+        f"👤 Ник: @{username or 'скрыт'}\n"
+        f"🆔 ID: `{user_id}`\n"
+        f"📅 В банде с: {reg_str}\n\n"
+        f"🎃 Баланс: **{balance}**\n"
+        f"💸 Потрачено: **{spent}**\n"
+        f"📈 Уровень: **{level}** ({title})",
+        reply_markup=main_menu_kb(cb.from_user),
+        parse_mode="Markdown"
     )
     await cb.answer()
 
@@ -544,31 +552,57 @@ async def show_top(cb: types.CallbackQuery):
     await cb.message.edit_text(text, reply_markup=main_menu_kb(cb.from_user), parse_mode="Markdown")
     await cb.answer()
 
-# --- ЕЖЕДНЕВНЫЙ БОНУС ---
+# --- ЕЖЕДНЕВНЫЙ БОНУС (Стрик) ---
 @dp.callback_query(F.data == "daily_bonus")
 async def claim_daily_bonus(cb: types.CallbackQuery):
     user_id = cb.from_user.id
     now = datetime.now()
-    last_claim = get_last_bonus(user_id)
-    bonus_amount = 25
     
-    if last_claim:
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    cur.execute("SELECT last_claim, streak FROM user_bonuses WHERE user_id = ?", (user_id,))
+    row = cur.fetchone()
+    
+    streak = 0
+    if row:
+        last_claim = datetime.fromisoformat(row[0])
+        streak = row[1] or 0
         time_diff = now - last_claim
+        
         if time_diff < timedelta(hours=24):
             remaining = timedelta(hours=24) - time_diff
             hours, remainder = divmod(remaining.seconds, 3600)
             minutes, _ = divmod(remainder, 60)
-            await cb.answer(f"⏳ Следующую порцию тьмы можно получить через {hours} ч. {minutes} мин.", show_alert=True)
+            conn.close()
+            await cb.answer(f"⏳ Возвращайся через {hours} ч. {minutes} мин.", show_alert=True)
             return
-
-    new_balance = update_balance(user_id, "", bonus_amount)
-    set_bonus_claimed(user_id)
+        
+        if time_diff > timedelta(hours=48):
+            streak = 0
+            
+    streak += 1
+    
+    if streak == 1: reward = 25
+    elif streak == 2: reward = 30
+    elif streak == 3: reward = 40
+    elif streak == 4: reward = 50
+    elif streak == 5: reward = 75
+    else: reward = 100
+        
+    new_balance = update_balance(user_id, "", reward)
+    
+    now_str = now.isoformat()
+    cur.execute("INSERT INTO user_bonuses (user_id, last_claim, streak) VALUES (?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET last_claim = ?, streak = ?", 
+                (user_id, now_str, streak, now_str, streak))
+    conn.commit()
+    conn.close()
     
     await cb.message.edit_text(
         f"🎁 **Тёмный дар получен!**\n\n"
-        f"Тьма благоволит тебе и дарует **{bonus_amount}** тыкв 🎃.\n\n"
+        f"🔥 Твоя серия: **{streak}** дней подряд!\n"
+        f"💰 Награда: **{reward}** 🎃\n\n"
         f"🎃 Твой котёл: **{new_balance}**.\n"
-        f"Возвращайся через 24 часа за новой порцией!",
+        f"*(Заходи каждый день, чтобы награда росла!)*",
         reply_markup=main_menu_kb(cb.from_user), parse_mode="Markdown"
     )
     await cb.answer("Бонус получен!")
@@ -583,44 +617,103 @@ async def show_games(cb: types.CallbackQuery, state: FSMContext):
     await cb.message.edit_text("🎮 **Игровой зал**\n\nВыбирай испытание. Тьма любит азартных...", reply_markup=games_menu_kb(), parse_mode="Markdown")
     await cb.answer()
 
+# Колесо Фортуны (КД 6 часов)
+@dp.callback_query(F.data == "game_wheel")
+async def wheel_of_fortune(cb: types.CallbackQuery):
+    user_id = cb.from_user.id
+    now = datetime.now()
+    cost = 20
+    
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    cur.execute("SELECT last_played FROM user_wheel_cd WHERE user_id = ?", (user_id,))
+    row = cur.fetchone()
+    
+    if row:
+        last_played = datetime.fromisoformat(row[0])
+        time_diff = now - last_played
+        if time_diff < timedelta(hours=6):
+            remaining = timedelta(hours=6) - time_diff
+            hours, remainder = divmod(remaining.seconds, 3600)
+            minutes, _ = divmod(remainder, 60)
+            conn.close()
+            await cb.answer(f"🎡 Колесо остывает. Жди {hours} ч. {minutes} мин.", show_alert=True)
+            return
+
+    info = get_user_info(user_id)
+    if not info or info[1] < cost:
+        conn.close()
+        await cb.answer(f"❌ Для колеса нужно минимум {cost} тыкв!", show_alert=True)
+        return
+        
+    update_balance(user_id, "", -cost, is_spending=True)
+    
+    now_str = now.isoformat()
+    cur.execute("INSERT INTO user_wheel_cd (user_id, last_played) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_played = ?", (user_id, now_str, now_str))
+    conn.commit()
+    conn.close()
+    
+    outcomes = [
+        (0.05, 100), (0.15, 50), (0.30, 20), (0.50, 0)
+    ]
+    
+    rand = random.random()
+    cumulative = 0
+    prize = 0
+    for chance, val in outcomes:
+        cumulative += chance
+        if rand < cumulative:
+            prize = val
+            break
+            
+    if prize > 0:
+        new_balance = update_balance(user_id, "", prize)
+        text = f"🎡 **Колесо завертелось...**\n\n🎉 Тебе выпало: **{prize}** 🎃!\n\n🎃 Твой баланс: **{new_balance}**."
+    else:
+        new_info = get_user_info(user_id)
+        new_balance = new_info[1] if new_info else 0
+        text = f"🎡 **Колесо завертелось...**\n\n💀 Увы, сегодня удача не на твоей стороне. Ты проиграл.\n\n🎃 Твой баланс: **{new_balance}**."
+        
+    await cb.message.edit_text(text, reply_markup=games_menu_kb(), parse_mode="Markdown")
+    await cb.answer()
+
 @dp.callback_query(F.data == "game_trickortreat")
 async def trick_or_treat(cb: types.CallbackQuery):
     user_id = cb.from_user.id
     now = datetime.now()
     
-    last_played = get_last_trickortreat(user_id)
-    if last_played:
-        time_diff = now - last_played
-        if time_diff < timedelta(hours=24):
-            remaining = timedelta(hours=24) - time_diff
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    cur.execute("SELECT last_played FROM user_trickortreat WHERE user_id = ?", (user_id,))
+    row = cur.fetchone()
+    
+    if row:
+        last_played = datetime.fromisoformat(row[0])
+        if now - last_played < timedelta(hours=24):
+            conn.close()
+            remaining = timedelta(hours=24) - (now - last_played)
             hours, remainder = divmod(remaining.seconds, 3600)
             minutes, _ = divmod(remainder, 60)
-            await cb.answer(f"🎃 Тьма отдыхает. Возвращайся через {hours} ч. {minutes} мин.", show_alert=True)
+            await cb.answer(f"🎃 Тьма отдыхает. Жди {hours} ч. {minutes} мин.", show_alert=True)
             return
 
-    balance = get_balance(user_id)
-    if balance < 25:
-        await cb.answer("❌ Для игры нужно минимум 25 тыкв! Тьма не любит нищих.", show_alert=True)
+    info = get_user_info(user_id)
+    if not info or info[1] < 25:
+        conn.close()
+        await cb.answer("❌ Нужно минимум 25 тыкв!", show_alert=True)
         return
         
-    set_trickortreat_played(user_id)
+    now_str = now.isoformat()
+    cur.execute("INSERT INTO user_trickortreat (user_id, last_played) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET last_played = ?", (user_id, now_str, now_str))
+    conn.commit()
+    conn.close()
     
     if random.random() < 0.5:
         new_balance = update_balance(user_id, "", 25)
-        text = (
-            f"🍬 **Сладость!**\n\n"
-            f"Тьма оказалась благосклонна к тебе.\n"
-            f"Ты получаешь **+25** тыкв 🎃!\n\n"
-            f"🎃 Твой баланс: **{new_balance}**."
-        )
+        text = f"🍬 **Сладость!**\n\nТы получаешь **+25** тыкв 🎃!\n\n🎃 Твой баланс: **{new_balance}**."
     else:
-        new_balance = update_balance(user_id, "", -25)
-        text = (
-            f"🧟 **Гадость!**\n\n"
-            f"Древнее проклятие настигло тебя.\n"
-            f"У тебя отняли **25** тыкв 🎃!\n\n"
-            f"🎃 Твой баланс: **{new_balance}**."
-        )
+        new_balance = update_balance(user_id, "", -25, is_spending=True)
+        text = f"🧟 **Гадость!**\n\nУ тебя отняли **25** тыкв 🎃!\n\n🎃 Твой баланс: **{new_balance}**."
         
     await cb.message.edit_text(text, reply_markup=games_menu_kb(), parse_mode="Markdown")
     await cb.answer()
@@ -667,13 +760,14 @@ async def start_rocket_game(user_id: int, bet: int, message: types.Message, cb: 
         else: await message.answer("Ты уже в игре!")
         return
 
-    balance = get_balance(user_id)
+    info = get_user_info(user_id)
+    balance = info[1] if info else 0
     if balance < bet:
         if cb: await cb.answer(f"Недостаточно тыкв! У тебя только {balance} 🎃.", show_alert=True)
         else: await message.answer(f"❌ Недостаточно тыкв! У тебя только {balance} 🎃.")
         return
 
-    update_balance(user_id, "", -bet)
+    update_balance(user_id, "", -bet, is_spending=True)
     crash_point = round(random.uniform(1.2, 5.0), 1)
     game_text = f"🚀 **Ракета взлетела!**\n\nМножитель: **x1.0**\nСтавка: {bet} 🎃\n\nУспей забрать!"
     
@@ -742,11 +836,7 @@ async def rocket_cashout(cb: types.CallbackQuery):
 @dp.callback_query(F.data == "game_upgrader")
 async def upgrader_start(cb: types.CallbackQuery, state: FSMContext):
     await state.set_state(Upgrader.amount)
-    await cb.message.edit_text(
-        "📈 **Апгрейдер**\n\n"
-        "Введи сумму в тыквах, которую хочешь поставить:",
-        reply_markup=cancel_upgrader_kb()
-    )
+    await cb.message.edit_text("📈 **Апгрейдер**\n\nВведи сумму в тыквах:", reply_markup=cancel_upgrader_kb())
     await cb.answer()
 
 @dp.message(Upgrader.amount)
@@ -757,34 +847,30 @@ async def upgrader_amount(message: types.Message, state: FSMContext):
     except ValueError:
         return await message.answer("❌ Введи целое число больше 0.")
     
-    balance = get_balance(message.from_user.id)
+    info = get_user_info(message.from_user.id)
+    balance = info[1] if info else 0
     if balance < bet:
         return await message.answer(f"❌ Недостаточно тыкв! У тебя только {balance} 🎃.")
     
     await state.update_data(bet=bet)
-    await message.answer(
-        f"📈 Ставка: **{bet}** 🎃.\n\n"
-        f"Выбери режим апгрейда:",
-        reply_markup=upgrader_choice_kb(),
-        parse_mode="Markdown"
-    )
+    await message.answer(f"📈 Ставка: **{bet}** 🎃.\n\nВыбери режим:", reply_markup=upgrader_choice_kb(), parse_mode="Markdown")
 
 @dp.callback_query(F.data == "upgrade_fast")
 async def upgrader_fast(cb: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     bet = data.get("bet")
-    if not bet:
-        return await cb.answer("Сессия устарела. Начни заново.", show_alert=True)
+    if not bet: return await cb.answer("Сессия устарела.", show_alert=True)
     await state.clear()
     
-    update_balance(cb.from_user.id, "", -bet)
+    update_balance(cb.from_user.id, "", -bet, is_spending=True)
     
     if random.random() < 0.35:
         win_amount = bet * 2
         new_balance = update_balance(cb.from_user.id, "", win_amount)
         text = f"🎉 **Вы выиграли!**\n\nСтавка: {bet} 🎃\nВыигрыш: **+{win_amount}** 🎃 (x2)\n\n🎃 Ваш баланс: **{new_balance}**.\n\nХотите еще?"
     else:
-        new_balance = get_balance(cb.from_user.id)
+        info = get_user_info(cb.from_user.id)
+        new_balance = info[1] if info else 0
         text = f"💀 **Вы проиграли!**\n\nСтавка: {bet} 🎃 сгорела.\n\n🎃 Ваш баланс: **{new_balance}**.\n\nХотите еще раз?"
         
     await cb.message.edit_text(text, reply_markup=upgrader_retry_kb(), parse_mode="Markdown")
@@ -794,18 +880,18 @@ async def upgrader_fast(cb: types.CallbackQuery, state: FSMContext):
 async def upgrader_slow(cb: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     bet = data.get("bet")
-    if not bet:
-        return await cb.answer("Сессия устарела. Начни заново.", show_alert=True)
+    if not bet: return await cb.answer("Сессия устарела.", show_alert=True)
     await state.clear()
     
-    update_balance(cb.from_user.id, "", -bet)
+    update_balance(cb.from_user.id, "", -bet, is_spending=True)
     
     if random.random() < 0.6:
         win_amount = int(bet * 1.5)
         new_balance = update_balance(cb.from_user.id, "", win_amount)
         text = f"🎉 **Вы выиграли!**\n\nСтавка: {bet} 🎃\nВыигрыш: **+{win_amount}** 🎃 (x1.5)\n\n🎃 Ваш баланс: **{new_balance}**.\n\nХотите еще?"
     else:
-        new_balance = get_balance(cb.from_user.id)
+        info = get_user_info(cb.from_user.id)
+        new_balance = info[1] if info else 0
         text = f"💀 **Вы проиграли!**\n\nСтавка: {bet} 🎃 сгорела.\n\n🎃 Ваш баланс: **{new_balance}**.\n\nХотите еще раз?"
         
     await cb.message.edit_text(text, reply_markup=upgrader_retry_kb(), parse_mode="Markdown")
@@ -827,8 +913,8 @@ async def transfer_cancel(cb: types.CallbackQuery, state: FSMContext):
 @dp.message(TransferPumpkins.target)
 async def transfer_target(message: types.Message, state: FSMContext):
     target_id = find_user_id(message.text)
-    if not target_id: return await message.answer("❌ Пользователь не найден в базе бота.")
-    if target_id == message.from_user.id: return await message.answer("❌ Нельзя перевести тыквы самому себе.")
+    if not target_id: return await message.answer("❌ Пользователь не найден в базе.")
+    if target_id == message.from_user.id: return await message.answer("❌ Нельзя перевести самому себе.")
     await state.update_data(target=target_id)
     await state.set_state(TransferPumpkins.amount)
     await message.answer(f"Сколько тыкв 🎃 перевести пользователю `{target_id}`?", parse_mode="Markdown", reply_markup=cancel_transfer_kb())
@@ -844,9 +930,10 @@ async def transfer_amount(message: types.Message, state: FSMContext):
     target_id = data["target"]
     await state.clear()
     
-    if get_balance(message.from_user.id) < amount: return await message.answer("❌ Недостаточно тыкв!")
+    info = get_user_info(message.from_user.id)
+    if not info or info[1] < amount: return await message.answer("❌ Недостаточно тыкв!")
 
-    update_balance(message.from_user.id, "", -amount)
+    update_balance(message.from_user.id, "", -amount, is_spending=True)
     new_target_balance = update_balance(target_id, "", amount)
     
     await message.answer(f"✅ Ты перевел **{amount}** 🎃 пользователю `{target_id}`.", reply_markup=main_menu_kb(message.from_user), parse_mode="Markdown")
@@ -870,10 +957,11 @@ async def process_buy_item(cb: types.CallbackQuery):
     if item["limit"] is not None and bought >= item["limit"]:
         return await cb.answer("Лимит покупок исчерпан!", show_alert=True)
         
-    if get_balance(cb.from_user.id) < item["price"]:
+    info = get_user_info(cb.from_user.id)
+    if not info or info[1] < item["price"]:
         return await cb.answer(f"Недостаточно тыкв! Нужно: {item['price']} 🎃", show_alert=True)
         
-    update_balance(cb.from_user.id, "", -item["price"])
+    update_balance(cb.from_user.id, "", -item["price"], is_spending=True)
     increment_purchase(cb.from_user.id, item_id)
     
     await cb.message.edit_text(f"✅ Ты купил **{item['name']}** за {item['price']} 🎃!\nСвяжись с поддержкой.", reply_markup=main_menu_kb(cb.from_user), parse_mode="Markdown")
@@ -1008,7 +1096,9 @@ async def admin_check_bal(message: types.Message, state: FSMContext):
     target_id = find_user_id(message.text)
     if not target_id: return await message.answer("❌ Не найден.")
     await state.clear()
-    await message.answer(f"👁 Баланс `{target_id}`: **{get_balance(target_id)}** 🎃.", reply_markup=admin_kb(), parse_mode="Markdown")
+    info = get_user_info(target_id)
+    bal = info[1] if info else 0
+    await message.answer(f"👁 Баланс `{target_id}`: **{bal}** 🎃.", reply_markup=admin_kb(), parse_mode="Markdown")
 
 @dp.callback_query(F.data == "admin_grant")
 async def admin_grant_start(cb: types.CallbackQuery, state: FSMContext):
@@ -1033,7 +1123,7 @@ async def admin_give_start(cb: types.CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user): return await cb.answer("Нет доступа.", show_alert=True)
     await state.update_data(action="give")
     await state.set_state(AdminAmount.target_id)
-    await cb.message.edit_text("🪄 Введи **ID жертвы**:", reply_markup=cancel_admin_kb())
+    await cb.message.edit_text("🪄 Введи **ID** или **@username** жертвы:", reply_markup=cancel_admin_kb())
     await cb.answer()
 
 @dp.callback_query(F.data == "admin_take")
@@ -1041,10 +1131,9 @@ async def admin_take_start(cb: types.CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user): return await cb.answer("Нет доступа.", show_alert=True)
     await state.update_data(action="take")
     await state.set_state(AdminAmount.target_id)
-    await cb.message.edit_text("🪓 Введи **ID грешника**:", reply_markup=cancel_admin_kb())
+    await cb.message.edit_text("🪓 Введи **ID** или **@username** грешника:", reply_markup=cancel_admin_kb())
     await cb.answer()
 
-# --- НАЧИСЛЕНИЕ ВСЕМ ---
 @dp.callback_query(F.data == "admin_give_all")
 async def admin_give_all_start(cb: types.CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user): return await cb.answer("Нет доступа.", show_alert=True)
@@ -1075,7 +1164,6 @@ async def admin_give_all_amount(message: types.Message, state: FSMContext):
         
     await message.answer(f"✅ Готово! Успешно начислено {success} пользователям.", reply_markup=admin_kb())
 
-# --- ОТОБРАТЬ У ВСЕХ ---
 @dp.callback_query(F.data == "admin_take_all")
 async def admin_take_all_start(cb: types.CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user): return await cb.answer("Нет доступа.", show_alert=True)
@@ -1097,7 +1185,7 @@ async def admin_take_all_amount(message: types.Message, state: FSMContext):
     
     success = 0
     for uid in users:
-        update_balance(uid, "", -amount)
+        update_balance(uid, "", -amount, is_spending=True)
         try:
             await bot.send_message(uid, f"🪓 **Гнев Мастера!**\n\nУ тебя изъято **{amount}** 🎃.", parse_mode="Markdown")
             success += 1
@@ -1106,7 +1194,6 @@ async def admin_take_all_amount(message: types.Message, state: FSMContext):
         
     await message.answer(f"✅ Готово! Успешно списано у {success} пользователей.", reply_markup=admin_kb())
 
-# --- РАССЫЛКА ПОДАРКОВ ---
 @dp.callback_query(F.data == "admin_gift_all")
 async def admin_gift_all_start(cb: types.CallbackQuery):
     if not is_admin(cb.from_user): return await cb.answer("Нет доступа.", show_alert=True)
@@ -1155,9 +1242,9 @@ async def admin_cancel(cb: types.CallbackQuery, state: FSMContext):
 
 @dp.message(AdminAmount.target_id)
 async def handle_target(message: types.Message, state: FSMContext):
-    try: target = int(message.text.strip())
-    except: return await message.answer("Нужен ID.")
-    await state.update_data(target=target)
+    target_id = find_user_id(message.text)
+    if not target_id: return await message.answer("❌ Не найден.")
+    await state.update_data(target=target_id)
     await state.set_state(AdminAmount.amount)
     await message.answer("Сколько тыкв?", reply_markup=cancel_admin_kb())
 
@@ -1222,4 +1309,4 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main()) 
