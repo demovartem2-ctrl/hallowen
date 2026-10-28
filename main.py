@@ -218,7 +218,6 @@ def games_menu_kb() -> InlineKeyboardMarkup:
 
 def cases_menu_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    # ИЗМЕНЕНО: Теперь цены в тыквах
     b.button(text="🌭 Сосиска (333 🎃) [до 800]", callback_data="buy_case_sosiska")
     b.button(text="🕸️ Паутина (150 🎃) [до 400]", callback_data="buy_case_pautina")
     b.button(text="🎃 Тыква (666 🎃) [до 1500]", callback_data="buy_case_tykva")
@@ -454,7 +453,7 @@ async def buy_case(cb: types.CallbackQuery):
     now = datetime.now()
     async with db_pool.acquire() as conn:
         row = await conn.fetchrow("SELECT last_time FROM user_case_cd WHERE user_id = $1", cb.from_user.id)
-    if row and (now - row['last_time']) < timedelta(seconds=5):
+    if row and (now - row['last_time']).total_seconds() < 5:
         rem = 5 - int((now - row['last_time']).total_seconds())
         return await cb.answer(f"⏳ Подожди {rem} сек.", show_alert=True)
         
@@ -480,7 +479,18 @@ async def buy_case(cb: types.CallbackQuery):
     # 5. Списание стоимости
     await update_balance(cb.from_user.id, "", -c_data["price"], is_spending=True)
     
-    # 6. Генерация награды
+    # 6. Анимация открытия
+    await cb.message.edit_text(
+        f"🎁 **Кейс «{c_data['name']}» открывается...**\n\n"
+        f"💰 Списано: {c_data['price']} 🎃\n"
+        f"🎰 Крутим барабаны...",
+        reply_markup=None
+    )
+    await cb.answer() # Убираем часики загрузки
+    
+    await asyncio.sleep(1.5) # Ждем 1.5 секунды для эффекта
+    
+    # 7. Генерация награды
     r = random.random()
     if case_id == "pautina":
         if r < 0.5: reward = random.randint(10, 50)
@@ -501,23 +511,23 @@ async def buy_case(cb: types.CallbackQuery):
         elif r < 0.995: reward = random.randint(901, 1200)
         else: reward = random.randint(1201, 1500)
             
-    # 7. Начисление награды
+    # 8. Начисление награды
     new_bal = await update_balance(cb.from_user.id, "", reward)
     
-    # 8. Обновление БД (кулдаун и счетчик покупок)
+    # 9. Обновление БД
     async with db_pool.acquire() as conn:
         await conn.execute("INSERT INTO user_case_cd (user_id, last_time) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET last_time = $2", cb.from_user.id, now)
         await conn.execute("INSERT INTO user_purchases (user_id, item_id, count) VALUES ($1, $2, 1) ON CONFLICT (user_id, item_id) DO UPDATE SET count = count + 1", cb.from_user.id, case_id)
         
-    # 9. Ответ пользователю
+    # 10. Финальный ответ
     await cb.message.edit_text(
         f"🎁 **Кейс «{c_data['name']}» открыт!**\n\n"
-        f"Ты потратил: {c_data['price']} 🎃\n"
         f"Тебе выпало: **{reward}** 🎃!\n\n"
-        f"🎃 Твой баланс: **{new_bal}**.",
-        reply_markup=games_menu_kb(), parse_mode="Markdown"
+        f"🎃 Твой баланс: **{new_bal}**.\n"
+        f"Куплено кейсов: `{count + 1}/10`",
+        reply_markup=games_menu_kb(), 
+        parse_mode="Markdown"
     )
-    await cb.answer("Кейс открыт!")
 
 # --- ОСТАЛЬНЫЕ ИГРЫ ---
 @dp.callback_query(F.data == "game_wheel")
