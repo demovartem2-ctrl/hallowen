@@ -370,9 +370,10 @@ def shop_kb(user_id: int) -> InlineKeyboardMarkup:
 
 def buy_stars_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="100 🎃 (1750 ⭐)", callback_data="buy_stars_100")
-    b.button(text="250 🎃 (4375 ⭐)", callback_data="buy_stars_250")
-    b.button(text="500 🎃 (8750 ⭐)", callback_data="buy_stars_500")
+    # НОВЫЙ КУРС 1:10
+    b.button(text="100 🎃 (1000 ⭐)", callback_data="buy_stars_100")
+    b.button(text="250 🎃 (2500 ⭐)", callback_data="buy_stars_250")
+    b.button(text="500 🎃 (5000 ⭐)", callback_data="buy_stars_500")
     b.button(text="✍️ Своя сумма", callback_data="buy_stars_custom")
     b.button(text="🔙 Назад", callback_data="balance_menu")
     b.adjust(1)
@@ -867,7 +868,7 @@ async def process_buy_item(cb: types.CallbackQuery):
 @dp.callback_query(F.data == "buy_stars_menu")
 async def show_buy_stars(cb: types.CallbackQuery, state: FSMContext):
     await state.clear()
-    await cb.message.edit_text("💎 **Обмен звёзд на тыквы**\nКурс: 1 🎃 = 17.5 ⭐\nМин. покупка: 100 🎃", reply_markup=buy_stars_kb(), parse_mode="Markdown")
+    await cb.message.edit_text("💎 **Обмен звёзд на тыквы**\nКурс: 1 🎃 = 10 ⭐\nМин. покупка: 100 🎃", reply_markup=buy_stars_kb(), parse_mode="Markdown")
     await cb.answer()
 
 @dp.callback_query(F.data == "buy_stars_custom")
@@ -891,14 +892,16 @@ async def process_custom_amount(message: types.Message, state: FSMContext):
         return await message.answer("❌ Ошибка! Введи целое число не меньше 100.")
     
     await state.clear()
-    stars = math.ceil(pumpkins * 17.5)
+    # НОВЫЙ КУРС 1:10
+    stars = pumpkins * 10
     prices = [LabeledPrice(label="XTR", amount=stars)]
     await message.answer_invoice(title="Покупка тыкв 🎃", description=f"Покупка {pumpkins} тыкв за {stars} звёзд.", prices=prices, provider_token="", currency="XTR", payload=f"stars_{pumpkins}")
 
 @dp.callback_query(F.data.startswith("buy_stars_") & ~F.data.startswith("buy_stars_custom") & ~F.data.startswith("buy_stars_cancel") & ~F.data.startswith("buy_stars_menu"))
 async def process_preset_stars(cb: types.CallbackQuery):
     pumpkins = int(cb.data.replace("buy_stars_", ""))
-    stars = math.ceil(pumpkins * 17.5)
+    # НОВЫЙ КУРС 1:10
+    stars = pumpkins * 10
     prices = [LabeledPrice(label="XTR", amount=stars)]
     await cb.message.answer_invoice(title="Покупка тыкв 🎃", description=f"Покупка {pumpkins} тыкв за {stars} звёзд.", prices=prices, provider_token="", currency="XTR", payload=f"stars_{pumpkins}")
     await cb.answer()
