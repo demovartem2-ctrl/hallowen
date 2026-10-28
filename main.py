@@ -32,6 +32,15 @@ DEFAULT_ADMINS = {1780243203, 1780243210}
 DB_FILE = "halloween_bot.db"
 active_games = {}
 
+# --- СПИСОК ПОДАРКОВ ---
+GIFT_IDS = [
+    "9000000000000159",
+    "9000000000000158",
+    "9000000000000153",
+    "9000000000000152",
+    "9000000000000148"
+]
+
 # --- УТИЛИТЫ ---
 def is_admin(user: types.User) -> bool:
     if user is None: return False
@@ -416,11 +425,20 @@ def admin_kb() -> InlineKeyboardMarkup:
     b.button(text="🪓 Отобрать тыквы", callback_data="admin_take")
     b.button(text="🪄 Начислить всем", callback_data="admin_give_all")
     b.button(text="🪓 Отобрать у всех", callback_data="admin_take_all")
+    b.button(text="🎁 Подарить подарки", callback_data="admin_gift_all") # Новая кнопка
     b.button(text="👁 Баланс юзера", callback_data="admin_check_bal")
     b.button(text="📊 Балансы всех", callback_data="admin_all_bals")
     b.button(text="📜 Свитки (заявки)", callback_data="admin_pending")
     b.button(text="👑 Выдать админку", callback_data="admin_grant")
     b.button(text="🔙 В главное меню", callback_data="back_to_main")
+    b.adjust(1)
+    return b.as_markup()
+
+def admin_gift_choice_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    for gid in GIFT_IDS:
+        b.button(text=f"🎁 Подарок {gid}", callback_data=f"send_gift_{gid}")
+    b.button(text="🔙 Назад", callback_data="admin_panel")
     b.adjust(1)
     return b.as_markup()
 
@@ -1091,6 +1109,49 @@ async def admin_take_all_amount(message: types.Message, state: FSMContext):
         await asyncio.sleep(0.05)
         
     await message.answer(f"✅ Готово! Успешно списано у {success} пользователей.", reply_markup=admin_kb())
+
+# --- РАССЫЛКА ПОДАРКОВ ---
+@dp.callback_query(F.data == "admin_gift_all")
+async def admin_gift_all_start(cb: types.CallbackQuery):
+    if not is_admin(cb.from_user): return await cb.answer("Нет доступа.", show_alert=True)
+    await cb.message.edit_text(
+        "🎁 **Выбери подарок для рассылки ВСЕМ пользователям:**\n\n"
+        "⚠️ *Внимание: каждый подарок списывает звезды с баланса бота!*",
+        reply_markup=admin_gift_choice_kb(),
+        parse_mode="Markdown"
+    )
+    await cb.answer()
+
+@dp.callback_query(F.data.startswith("send_gift_"))
+async def admin_send_gift_process(cb: types.CallbackQuery):
+    if not is_admin(cb.from_user): return await cb.answer("Нет доступа.", show_alert=True)
+    
+    gift_id = cb.data.replace("send_gift_", "")
+    users = get_all_users()
+    await cb.message.edit_text(f"🚀 Начинаю рассылку подарка `{gift_id}` для {len(users)} пользователей...\nЭто может занять время.")
+    
+    success = 0
+    failed = 0
+    
+    for uid in users:
+        try:
+            # В aiogram 3 используется метод send_gift
+            await bot.send_gift(user_id=uid, gift_id=gift_id)
+            success += 1
+        except Exception as e:
+            logging.warning(f"Ошибка отправки подарка {uid}: {e}")
+            failed += 1
+        
+        # Задержка, чтобы не забанил телеграм
+        await asyncio.sleep(0.5)
+        
+    await cb.message.answer(
+        f"✅ **Рассылка подарков завершена!**\n\n"
+        f"Успешно отправлено: {success}\n"
+        f"Ошибок (лимиты/блокировки): {failed}",
+        reply_markup=admin_kb(),
+        parse_mode="Markdown"
+    )
 
 @dp.callback_query(F.data == "admin_cancel")
 async def admin_cancel(cb: types.CallbackQuery, state: FSMContext):
