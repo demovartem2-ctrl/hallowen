@@ -49,6 +49,7 @@ async def init_db():
         await conn.execute("CREATE TABLE IF NOT EXISTS user_bonuses (user_id BIGINT PRIMARY KEY, last_claim TIMESTAMP, streak INTEGER DEFAULT 0)")
         await conn.execute("CREATE TABLE IF NOT EXISTS user_trickortreat (user_id BIGINT PRIMARY KEY, last_played TIMESTAMP)")
         await conn.execute("CREATE TABLE IF NOT EXISTS user_wheel (user_id BIGINT PRIMARY KEY, last_played TIMESTAMP)")
+        await conn.execute("CREATE TABLE IF NOT EXISTS user_case_cd (user_id BIGINT PRIMARY KEY, last_time TIMESTAMP)")
         
         for admin_id in DEFAULT_ADMINS:
             await conn.execute("INSERT INTO admins (user_id) VALUES ($1) ON CONFLICT DO NOTHING", admin_id)
@@ -57,25 +58,18 @@ async def get_user_info(user_id: int):
     async with db_pool.acquire() as conn:
         return await conn.fetchrow("SELECT username, balance, spent, registered_at FROM users WHERE user_id = $1", user_id)
 
-# ИЗМЕНЕННАЯ ФУНКЦИЯ: Баланс не может уйти в минус (нижний порог 0), но верхнего лимита нет
 async def update_balance(user_id: int, username: str, amount: int, is_spending: bool = False) -> int:
     async with db_pool.acquire() as conn:
         row = await conn.fetchrow("SELECT balance, spent FROM users WHERE user_id = $1", user_id)
         if row:
             current_bal = row['balance']
             raw_new_bal = current_bal + amount
-            
-            # Защита от минуса
             new_bal = max(0, raw_new_bal)
-            
-            # Считаем, сколько реально изменилось (для статистики трат)
             actual_change = new_bal - current_bal
             new_spent = row['spent'] + (abs(actual_change) if is_spending and actual_change < 0 else 0)
-            
             await conn.execute("UPDATE users SET balance = $1, spent = $2, username = COALESCE($3, username) WHERE user_id = $4", new_bal, new_spent, username, user_id)
             return new_bal
         else:
-            # Если игрока нет, создаем и защищаем от минуса
             new_bal = max(0, amount)
             new_spent = abs(new_bal) if is_spending and new_bal < 0 else 0
             await conn.execute("INSERT INTO users (user_id, username, balance, spent) VALUES ($1, $2, $3, $4)", user_id, username, new_bal, new_spent)
@@ -217,7 +211,17 @@ def games_menu_kb() -> InlineKeyboardMarkup:
     b.button(text="🍬 Сладость/Гадость", callback_data="game_trickortreat")
     b.button(text="📈 Апгрейдер", callback_data="game_upgrader")
     b.button(text="🎡 Колесо (20🎃)", callback_data="game_wheel")
+    b.button(text="🎁 Кейсы", callback_data="case_menu") # НОВАЯ КНОПКА
     b.button(text="🔙 Назад", callback_data="back_to_main")
+    b.adjust(1)
+    return b.as_markup()
+
+def cases_menu_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="🌭 Сосиска (333 ⭐) [до 800]", callback_data="buy_case_sosiska")
+    b.button(text="🕸️ Паутина (150 ⭐) [до 400]", callback_data="buy_case_pautina")
+    b.button(text="🎃 Тыква (666 ⭐) [до 1500]", callback_data="buy_case_tykva")
+    b.button(text="🔙 Назад", callback_data="games_menu")
     b.adjust(1)
     return b.as_markup()
 
@@ -429,6 +433,55 @@ async def show_games(cb: types.CallbackQuery, state: FSMContext):
     await cb.message.edit_text("🎮 **Игровой зал**", reply_markup=games_menu_kb())
     await cb.answer()
 
+# --- КЕЙСЫ ---
+@dp.callback_query(F.data == "case_menu")
+async def show_cases(cb: types.CallbackQuery):
+    await cb.message.edit_text(
+        "🎁 **Кейсы**\n\n"
+        "Выбери свой трофей. Лимит: **10 кейсов** каждого типа.\n"
+        "Кулдаун между покупками: **5 секунд**.",
+        reply_markup=cases_menu_kb(),
+        parse_mode="Markdown"
+    )
+    await cb.answer()
+
+@dp.callback_query(F.data.startswith("buy_case_"))
+async def buy_case(cb: types.CallbackQuery):
+    case_id = cb.data.replace("buy_case_", "")
+    
+    # Проверка кулдауна (5 сек)
+    now = datetime.now()
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT last_time FROM user_case_cd WHERE user_id = $1", cb.from_user.id)
+    if row and (now - row['last_time']) < timedelta(seconds=5):
+        rem = 5 - int((now - row['last_time']).total_seconds())
+        return await cb.answer(f"⏳ Подожди {rem} сек.", show_alert=True)
+        
+    # Проверка лимита (10 шт)
+    async with db_pool.acquire() as conn:
+        count = await conn.fetchval("SELECT count FROM user_purchases WHERE user_id = $1 AND item_id = $2", cb.from_user.id, case_id)
+    if (count or 0) >= 10:
+        return await cb.answer("❌ Лимит 10 кейсов исчерпан!", show_alert=True)
+        
+    titles = {
+        "sosiska": ("Кейс: Сосиска", "Шанс выбить до 800 тыкв!", 333),
+        "pautina": ("Кейс: Паутина", "Шанс выбить до 400 тыкв!", 150),
+        "tykva": ("Кейс: Тыква", "Шанс выбить до 1500 тыкв!", 666)
+    }
+    title, desc, stars = titles[case_id]
+    prices = [LabeledPrice(label="XTR", amount=stars)]
+    
+    await cb.message.answer_invoice(
+        title=title,
+        description=desc,
+        prices=prices,
+        provider_token="",
+        currency="XTR",
+        payload=f"case_{case_id}"
+    )
+    await cb.answer()
+
+# --- ОСТАЛЬНЫЕ ИГРЫ ---
 @dp.callback_query(F.data == "game_wheel")
 async def wheel_of_fortune(cb: types.CallbackQuery):
     user_id = cb.from_user.id
@@ -716,10 +769,51 @@ async def pre_checkout(q: PreCheckoutQuery): await q.answer(ok=True)
 
 @dp.message(F.successful_payment)
 async def success_pay(message: types.Message):
-    p = int(message.successful_payment.invoice_payload.split("_")[1])
-    await update_balance(message.from_user.id, "", p)
-    admin = await is_admin_db(message.from_user.id)
-    await message.answer(f"🎉 +{p} 🎃", reply_markup=main_menu_kb(admin))
+    payload = message.successful_payment.invoice_payload
+    if payload.startswith("stars_"):
+        p = int(payload.split("_")[1])
+        await update_balance(message.from_user.id, "", p)
+        admin = await is_admin_db(message.from_user.id)
+        await message.answer(f"🎉 +{p} 🎃", reply_markup=main_menu_kb(admin))
+        
+    elif payload.startswith("case_"):
+        case_id = payload.replace("case_", "")
+        
+        # Генерация награды
+        r = random.random()
+        if case_id == "pautina":
+            if r < 0.5: reward = random.randint(10, 50)
+            elif r < 0.8: reward = random.randint(51, 150)
+            elif r < 0.95: reward = random.randint(151, 250)
+            elif r < 0.995: reward = random.randint(251, 350)
+            else: reward = random.randint(351, 400)
+        elif case_id == "sosiska":
+            if r < 0.5: reward = random.randint(50, 150)
+            elif r < 0.8: reward = random.randint(151, 300)
+            elif r < 0.95: reward = random.randint(301, 500)
+            elif r < 0.995: reward = random.randint(501, 650)
+            else: reward = random.randint(651, 800)
+        elif case_id == "tykva":
+            if r < 0.5: reward = random.randint(100, 300)
+            elif r < 0.8: reward = random.randint(301, 600)
+            elif r < 0.95: reward = random.randint(601, 900)
+            elif r < 0.995: reward = random.randint(901, 1200)
+            else: reward = random.randint(1201, 1500)
+            
+        new_bal = await update_balance(message.from_user.id, "", reward)
+        
+        # Обновляем БД (лимит и кулдаун)
+        now = datetime.now()
+        async with db_pool.acquire() as conn:
+            await conn.execute("INSERT INTO user_case_cd (user_id, last_time) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET last_time = $2", message.from_user.id, now)
+            await conn.execute("INSERT INTO user_purchases (user_id, item_id, count) VALUES ($1, $2, 1) ON CONFLICT (user_id, item_id) DO UPDATE SET count = count + 1", message.from_user.id, case_id)
+            
+        await message.answer(
+            f"🎁 **Кейс открыт!**\n\n"
+            f"Тебе выпало: **{reward}** 🎃!\n\n"
+            f"🎃 Твой баланс: **{new_bal}**.",
+            reply_markup=games_menu_kb(), parse_mode="Markdown"
+        )
 
 @dp.callback_query(F.data == "quest_menu")
 async def show_quests(cb: types.CallbackQuery):
