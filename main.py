@@ -219,9 +219,7 @@ def games_menu_kb() -> InlineKeyboardMarkup:
 def cases_menu_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text="🌭 Сосиска (333 🎃) [до 800]", callback_data="buy_case_sosiska")
-    b.button(text="🕸️ Паутина (150 🎃) [до 400]", callback_data="buy_case_pautina")
     b.button(text="🎃 Тыква (666 🎃) [до 1500]", callback_data="buy_case_tykva")
-    b.button(text="👻 Страшный мисс (777 🎃) [до 1900]", callback_data="buy_case_strashny")
     b.button(text="🔙 Назад", callback_data="games_menu")
     b.adjust(1)
     return b.as_markup()
@@ -470,10 +468,8 @@ async def buy_case(cb: types.CallbackQuery):
         
     # 4. Данные кейсов
     cases = {
-        "pautina": {"price": 150, "name": "Паутина"},
         "sosiska": {"price": 333, "name": "Сосиска"},
-        "tykva": {"price": 666, "name": "Тыква"},
-        "strashny": {"price": 777, "name": "Страшный мисс"}
+        "tykva": {"price": 666, "name": "Тыква"}
     }
     c_data = cases[case_id]
     
@@ -502,13 +498,7 @@ async def buy_case(cb: types.CallbackQuery):
     
     # 8. Генерация награды (ГАРАНТИРОВАННЫЙ МИНИМУМ 25)
     r = random.random()
-    if case_id == "pautina":
-        # Ставка 150
-        if r < 0.60: reward = random.randint(25, 70)
-        elif r < 0.85: reward = random.randint(71, 150)
-        elif r < 0.97: reward = random.randint(151, 250)
-        else: reward = random.randint(251, 400)
-    elif case_id == "sosiska":
+    if case_id == "sosiska":
         # Ставка 333
         if r < 0.60: reward = random.randint(50, 150)
         elif r < 0.85: reward = random.randint(151, 333)
@@ -520,12 +510,6 @@ async def buy_case(cb: types.CallbackQuery):
         elif r < 0.85: reward = random.randint(301, 666)
         elif r < 0.97: reward = random.randint(667, 1200)
         else: reward = random.randint(1201, 1500)
-    elif case_id == "strashny":
-        # Ставка 777
-        if r < 0.60: reward = random.randint(150, 400)
-        elif r < 0.85: reward = random.randint(401, 777)
-        elif r < 0.97: reward = random.randint(778, 1400)
-        else: reward = random.randint(1401, 1900)
             
     # 9. Начисление награды
     new_bal = await update_balance(cb.from_user.id, "", reward)
