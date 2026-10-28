@@ -221,6 +221,7 @@ def cases_menu_kb() -> InlineKeyboardMarkup:
     b.button(text="🌭 Сосиска (333 🎃) [до 800]", callback_data="buy_case_sosiska")
     b.button(text="🕸️ Паутина (150 🎃) [до 400]", callback_data="buy_case_pautina")
     b.button(text="🎃 Тыква (666 🎃) [до 1500]", callback_data="buy_case_tykva")
+    b.button(text="👻 Страшный мисс (777 🎃) [до 1900]", callback_data="buy_case_strashny") # НОВЫЙ КЕЙС
     b.button(text="🔙 Назад", callback_data="games_menu")
     b.adjust(1)
     return b.as_markup()
@@ -465,9 +466,10 @@ async def buy_case(cb: types.CallbackQuery):
         
     # 3. Данные кейсов
     cases = {
-        "sosiska": {"price": 333, "name": "Сосиска"},
-        "pautina": {"price": 150, "name": "Паутина"},
-        "tykva": {"price": 666, "name": "Тыква"}
+        "pautina": {"price": 150, "name": "Паутина", "max": 400},
+        "sosiska": {"price": 333, "name": "Сосиска", "max": 800},
+        "tykva": {"price": 666, "name": "Тыква", "max": 1500},
+        "strashny": {"price": 777, "name": "Страшный мисс", "max": 1900}
     }
     c_data = cases[case_id]
     
@@ -476,17 +478,22 @@ async def buy_case(cb: types.CallbackQuery):
     if info['balance'] < c_data["price"]:
         return await cb.answer(f"❌ Недостаточно тыкв! Нужно {c_data['price']} 🎃.", show_alert=True)
         
-    # 5. Списание стоимости
+    # 5. Списание стоимости и обновление БД (сразу, чтобы не было дыр)
     await update_balance(cb.from_user.id, "", -c_data["price"], is_spending=True)
-    
-    # 6. Анимация открытия
-    await cb.message.edit_text(
-        f"🎁 **Кейс «{c_data['name']}» открывается...**\n\n"
-        f"💰 Списано: {c_data['price']} 🎃\n"
-        f"🎰 Крутим барабаны...",
-        reply_markup=None
-    )
-    await cb.answer() # Убираем часики загрузки
+    async with db_pool.acquire() as conn:
+        await conn.execute("INSERT INTO user_case_cd (user_id, last_time) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET last_time = $2", cb.from_user.id, now)
+        await conn.execute("INSERT INTO user_purchases (user_id, item_id, count) VALUES ($1, $2, 1) ON CONFLICT (user_id, item_id) DO UPDATE SET count = count + 1", cb.from_user.id, case_id)
+        
+    # 6. Анимация открытия (уведомление)
+    await cb.answer(f"🎰 Крутим барабаны...", show_alert=False)
+    try:
+        await cb.message.edit_text(
+            f"🎁 **Кейс «{c_data['name']}» открывается...**\n\n"
+            f"💰 Списано: {c_data['price']} 🎃\n"
+            f"🎰 Ждём результат...",
+            reply_markup=None
+        )
+    except: pass
     
     await asyncio.sleep(1.5) # Ждем 1.5 секунды для эффекта
     
@@ -510,24 +517,29 @@ async def buy_case(cb: types.CallbackQuery):
         elif r < 0.95: reward = random.randint(601, 900)
         elif r < 0.995: reward = random.randint(901, 1200)
         else: reward = random.randint(1201, 1500)
+    elif case_id == "strashny":
+        if r < 0.5: reward = random.randint(150, 400)
+        elif r < 0.8: reward = random.randint(401, 800)
+        elif r < 0.95: reward = random.randint(801, 1200)
+        elif r < 0.995: reward = random.randint(1201, 1500)
+        else: reward = random.randint(1501, 1900)
             
     # 8. Начисление награды
     new_bal = await update_balance(cb.from_user.id, "", reward)
     
-    # 9. Обновление БД
-    async with db_pool.acquire() as conn:
-        await conn.execute("INSERT INTO user_case_cd (user_id, last_time) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET last_time = $2", cb.from_user.id, now)
-        await conn.execute("INSERT INTO user_purchases (user_id, item_id, count) VALUES ($1, $2, 1) ON CONFLICT (user_id, item_id) DO UPDATE SET count = count + 1", cb.from_user.id, case_id)
-        
-    # 10. Финальный ответ
-    await cb.message.edit_text(
-        f"🎁 **Кейс «{c_data['name']}» открыт!**\n\n"
-        f"Тебе выпало: **{reward}** 🎃!\n\n"
-        f"🎃 Твой баланс: **{new_bal}**.\n"
-        f"Куплено кейсов: `{count + 1}/10`",
-        reply_markup=games_menu_kb(), 
-        parse_mode="Markdown"
-    )
+    # 9. Финальный ответ (новым сообщением, чтобы избежать ошибок edit_text)
+    try:
+        await cb.message.edit_text(
+            f"🎁 **Кейс «{c_data['name']}» открыт!**\n\n"
+            f"Тебе выпало: **{reward}** 🎃!\n\n"
+            f"🎃 Твой баланс: **{new_bal}**.\n"
+            f"Куплено кейсов: `{(count or 0) + 1}/10`",
+            reply_markup=games_menu_kb(), 
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logging.error(f"Ошибка при отправке результата кейса: {e}")
+        await bot.send_message(cb.from_user.id, f"🎁 **Кейс открыт!**\nВыпало: **{reward}** 🎃\nБаланс: **{new_bal}**.", reply_markup=games_menu_kb())
 
 # --- ОСТАЛЬНЫЕ ИГРЫ ---
 @dp.callback_query(F.data == "game_wheel")
