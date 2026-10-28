@@ -93,6 +93,12 @@ async def get_all_users():
         rows = await conn.fetch("SELECT user_id FROM users")
     return [r['user_id'] for r in rows]
 
+# НОВАЯ ФУНКЦИЯ: Подсчет всех пользователей
+async def get_total_users_count() -> int:
+    async with db_pool.acquire() as conn:
+        count = await conn.fetchval("SELECT COUNT(*) FROM users")
+    return count or 0
+
 async def find_user_id(identifier: str) -> Optional[int]:
     identifier = identifier.strip()
     if identifier.isdigit(): return int(identifier)
@@ -281,6 +287,7 @@ def admin_kb() -> InlineKeyboardMarkup:
     b.button(text="🪄 Начислить всем", callback_data="admin_give_all")
     b.button(text="🪓 Отобрать у всех", callback_data="admin_take_all")
     b.button(text="🎁 Подарки", callback_data="admin_gift_all")
+    b.button(text="👥 Всего юзеров", callback_data="admin_users_count") # НОВАЯ КНОПКА
     b.button(text="👁 Баланс юзера", callback_data="admin_check_bal")
     b.button(text="📊 Балансы всех", callback_data="admin_all_bals")
     b.button(text="📜 Заявки", callback_data="admin_pending")
@@ -736,6 +743,18 @@ async def proof_sent(cb: types.CallbackQuery):
 async def admin_panel(cb: types.CallbackQuery):
     if not await is_admin_db(cb.from_user.id): return await cb.answer("Нет.", show_alert=True)
     await cb.message.edit_text("💀 **Панель Мастера**", reply_markup=admin_kb())
+    await cb.answer()
+
+# НОВЫЙ ОБРАБОТЧИК ДЛЯ ПОДСЧЕТА ЮЗЕРОВ
+@dp.callback_query(F.data == "admin_users_count")
+async def admin_users_count(cb: types.CallbackQuery):
+    if not await is_admin_db(cb.from_user.id): return await cb.answer("Нет доступа.", show_alert=True)
+    count = await get_total_users_count()
+    await cb.message.edit_text(
+        f"👥 **Статистика бота**\n\nВсего зарегистрировано пользователей: **{count}**", 
+        reply_markup=admin_kb(), 
+        parse_mode="Markdown"
+    )
     await cb.answer()
 
 @dp.callback_query(F.data == "admin_pending")
