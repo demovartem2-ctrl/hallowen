@@ -211,16 +211,17 @@ def games_menu_kb() -> InlineKeyboardMarkup:
     b.button(text="🍬 Сладость/Гадость", callback_data="game_trickortreat")
     b.button(text="📈 Апгрейдер", callback_data="game_upgrader")
     b.button(text="🎡 Колесо (20🎃)", callback_data="game_wheel")
-    b.button(text="🎁 Кейсы", callback_data="case_menu") # НОВАЯ КНОПКА
+    b.button(text="🎁 Кейсы", callback_data="case_menu")
     b.button(text="🔙 Назад", callback_data="back_to_main")
     b.adjust(1)
     return b.as_markup()
 
 def cases_menu_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="🌭 Сосиска (333 ⭐) [до 800]", callback_data="buy_case_sosiska")
-    b.button(text="🕸️ Паутина (150 ⭐) [до 400]", callback_data="buy_case_pautina")
-    b.button(text="🎃 Тыква (666 ⭐) [до 1500]", callback_data="buy_case_tykva")
+    # ИЗМЕНЕНО: Теперь цены в тыквах
+    b.button(text="🌭 Сосиска (333 🎃) [до 800]", callback_data="buy_case_sosiska")
+    b.button(text="🕸️ Паутина (150 🎃) [до 400]", callback_data="buy_case_pautina")
+    b.button(text="🎃 Тыква (666 🎃) [до 1500]", callback_data="buy_case_tykva")
     b.button(text="🔙 Назад", callback_data="games_menu")
     b.adjust(1)
     return b.as_markup()
@@ -433,11 +434,11 @@ async def show_games(cb: types.CallbackQuery, state: FSMContext):
     await cb.message.edit_text("🎮 **Игровой зал**", reply_markup=games_menu_kb())
     await cb.answer()
 
-# --- КЕЙСЫ ---
+# --- КЕЙСЫ ЗА ТЫКВЫ ---
 @dp.callback_query(F.data == "case_menu")
 async def show_cases(cb: types.CallbackQuery):
     await cb.message.edit_text(
-        "🎁 **Кейсы**\n\n"
+        "🎁 **Кейсы за тыквы**\n\n"
         "Выбери свой трофей. Лимит: **10 кейсов** каждого типа.\n"
         "Кулдаун между покупками: **5 секунд**.",
         reply_markup=cases_menu_kb(),
@@ -449,7 +450,7 @@ async def show_cases(cb: types.CallbackQuery):
 async def buy_case(cb: types.CallbackQuery):
     case_id = cb.data.replace("buy_case_", "")
     
-    # Проверка кулдауна (5 сек)
+    # 1. Проверка кулдауна (5 сек)
     now = datetime.now()
     async with db_pool.acquire() as conn:
         row = await conn.fetchrow("SELECT last_time FROM user_case_cd WHERE user_id = $1", cb.from_user.id)
@@ -457,29 +458,66 @@ async def buy_case(cb: types.CallbackQuery):
         rem = 5 - int((now - row['last_time']).total_seconds())
         return await cb.answer(f"⏳ Подожди {rem} сек.", show_alert=True)
         
-    # Проверка лимита (10 шт)
+    # 2. Проверка лимита (10 шт)
     async with db_pool.acquire() as conn:
         count = await conn.fetchval("SELECT count FROM user_purchases WHERE user_id = $1 AND item_id = $2", cb.from_user.id, case_id)
     if (count or 0) >= 10:
         return await cb.answer("❌ Лимит 10 кейсов исчерпан!", show_alert=True)
         
-    titles = {
-        "sosiska": ("Кейс: Сосиска", "Шанс выбить до 800 тыкв!", 333),
-        "pautina": ("Кейс: Паутина", "Шанс выбить до 400 тыкв!", 150),
-        "tykva": ("Кейс: Тыква", "Шанс выбить до 1500 тыкв!", 666)
+    # 3. Данные кейсов
+    cases = {
+        "sosiska": {"price": 333, "name": "Сосиска"},
+        "pautina": {"price": 150, "name": "Паутина"},
+        "tykva": {"price": 666, "name": "Тыква"}
     }
-    title, desc, stars = titles[case_id]
-    prices = [LabeledPrice(label="XTR", amount=stars)]
+    c_data = cases[case_id]
     
-    await cb.message.answer_invoice(
-        title=title,
-        description=desc,
-        prices=prices,
-        provider_token="",
-        currency="XTR",
-        payload=f"case_{case_id}"
+    # 4. Проверка баланса
+    info = await get_user_info(cb.from_user.id)
+    if info['balance'] < c_data["price"]:
+        return await cb.answer(f"❌ Недостаточно тыкв! Нужно {c_data['price']} 🎃.", show_alert=True)
+        
+    # 5. Списание стоимости
+    await update_balance(cb.from_user.id, "", -c_data["price"], is_spending=True)
+    
+    # 6. Генерация награды
+    r = random.random()
+    if case_id == "pautina":
+        if r < 0.5: reward = random.randint(10, 50)
+        elif r < 0.8: reward = random.randint(51, 150)
+        elif r < 0.95: reward = random.randint(151, 250)
+        elif r < 0.995: reward = random.randint(251, 350)
+        else: reward = random.randint(351, 400)
+    elif case_id == "sosiska":
+        if r < 0.5: reward = random.randint(50, 150)
+        elif r < 0.8: reward = random.randint(151, 300)
+        elif r < 0.95: reward = random.randint(301, 500)
+        elif r < 0.995: reward = random.randint(501, 650)
+        else: reward = random.randint(651, 800)
+    elif case_id == "tykva":
+        if r < 0.5: reward = random.randint(100, 300)
+        elif r < 0.8: reward = random.randint(301, 600)
+        elif r < 0.95: reward = random.randint(601, 900)
+        elif r < 0.995: reward = random.randint(901, 1200)
+        else: reward = random.randint(1201, 1500)
+            
+    # 7. Начисление награды
+    new_bal = await update_balance(cb.from_user.id, "", reward)
+    
+    # 8. Обновление БД (кулдаун и счетчик покупок)
+    async with db_pool.acquire() as conn:
+        await conn.execute("INSERT INTO user_case_cd (user_id, last_time) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET last_time = $2", cb.from_user.id, now)
+        await conn.execute("INSERT INTO user_purchases (user_id, item_id, count) VALUES ($1, $2, 1) ON CONFLICT (user_id, item_id) DO UPDATE SET count = count + 1", cb.from_user.id, case_id)
+        
+    # 9. Ответ пользователю
+    await cb.message.edit_text(
+        f"🎁 **Кейс «{c_data['name']}» открыт!**\n\n"
+        f"Ты потратил: {c_data['price']} 🎃\n"
+        f"Тебе выпало: **{reward}** 🎃!\n\n"
+        f"🎃 Твой баланс: **{new_bal}**.",
+        reply_markup=games_menu_kb(), parse_mode="Markdown"
     )
-    await cb.answer()
+    await cb.answer("Кейс открыт!")
 
 # --- ОСТАЛЬНЫЕ ИГРЫ ---
 @dp.callback_query(F.data == "game_wheel")
@@ -775,45 +813,6 @@ async def success_pay(message: types.Message):
         await update_balance(message.from_user.id, "", p)
         admin = await is_admin_db(message.from_user.id)
         await message.answer(f"🎉 +{p} 🎃", reply_markup=main_menu_kb(admin))
-        
-    elif payload.startswith("case_"):
-        case_id = payload.replace("case_", "")
-        
-        # Генерация награды
-        r = random.random()
-        if case_id == "pautina":
-            if r < 0.5: reward = random.randint(10, 50)
-            elif r < 0.8: reward = random.randint(51, 150)
-            elif r < 0.95: reward = random.randint(151, 250)
-            elif r < 0.995: reward = random.randint(251, 350)
-            else: reward = random.randint(351, 400)
-        elif case_id == "sosiska":
-            if r < 0.5: reward = random.randint(50, 150)
-            elif r < 0.8: reward = random.randint(151, 300)
-            elif r < 0.95: reward = random.randint(301, 500)
-            elif r < 0.995: reward = random.randint(501, 650)
-            else: reward = random.randint(651, 800)
-        elif case_id == "tykva":
-            if r < 0.5: reward = random.randint(100, 300)
-            elif r < 0.8: reward = random.randint(301, 600)
-            elif r < 0.95: reward = random.randint(601, 900)
-            elif r < 0.995: reward = random.randint(901, 1200)
-            else: reward = random.randint(1201, 1500)
-            
-        new_bal = await update_balance(message.from_user.id, "", reward)
-        
-        # Обновляем БД (лимит и кулдаун)
-        now = datetime.now()
-        async with db_pool.acquire() as conn:
-            await conn.execute("INSERT INTO user_case_cd (user_id, last_time) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET last_time = $2", message.from_user.id, now)
-            await conn.execute("INSERT INTO user_purchases (user_id, item_id, count) VALUES ($1, $2, 1) ON CONFLICT (user_id, item_id) DO UPDATE SET count = count + 1", message.from_user.id, case_id)
-            
-        await message.answer(
-            f"🎁 **Кейс открыт!**\n\n"
-            f"Тебе выпало: **{reward}** 🎃!\n\n"
-            f"🎃 Твой баланс: **{new_bal}**.",
-            reply_markup=games_menu_kb(), parse_mode="Markdown"
-        )
 
 @dp.callback_query(F.data == "quest_menu")
 async def show_quests(cb: types.CallbackQuery):
