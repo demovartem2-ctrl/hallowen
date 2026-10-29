@@ -50,12 +50,16 @@ async def init_db():
         await conn.execute("CREATE TABLE IF NOT EXISTS user_trickortreat (user_id BIGINT PRIMARY KEY, last_played TIMESTAMP)")
         await conn.execute("CREATE TABLE IF NOT EXISTS user_wheel (user_id BIGINT PRIMARY KEY, last_played TIMESTAMP)")
         
+        # Таблицы для промокодов
+        await conn.execute("CREATE TABLE IF NOT EXISTS promocodes (code TEXT PRIMARY KEY, reward BIGINT, limit_uses INTEGER, current_uses INTEGER DEFAULT 0)")
+        await conn.execute("CREATE TABLE IF NOT EXISTS user_promo_uses (user_id BIGINT, code TEXT, PRIMARY KEY (user_id, code))")
+        
         for admin_id in DEFAULT_ADMINS:
             await conn.execute("INSERT INTO admins (user_id) VALUES ($1) ON CONFLICT DO NOTHING", admin_id)
 
 async def wipe_database():
     async with db_pool.acquire() as conn:
-        await conn.execute("TRUNCATE TABLE users, quest_proofs, user_purchases, settings, user_quest_completions, user_bonuses, user_trickortreat, user_wheel RESTART IDENTITY CASCADE")
+        await conn.execute("TRUNCATE TABLE users, quest_proofs, user_purchases, settings, user_quest_completions, user_bonuses, user_trickortreat, user_wheel, promocodes, user_promo_uses RESTART IDENTITY CASCADE")
         await conn.execute("TRUNCATE TABLE admins CASCADE")
         for admin_id in DEFAULT_ADMINS:
             await conn.execute("INSERT INTO admins (user_id) VALUES ($1)", admin_id)
@@ -212,6 +216,12 @@ class AdminTakeAll(StatesGroup):
     amount = State()
 class Upgrader(StatesGroup):
     amount = State()
+class PromoCreate(StatesGroup):
+    name = State()
+    reward = State()
+    limit = State()
+class PromoEnter(StatesGroup):
+    code = State()
 
 # --- МАГАЗИН ---
 SHOP_ITEMS = {
@@ -227,6 +237,7 @@ def main_menu_kb(is_admin: bool) -> InlineKeyboardMarkup:
     b.button(text="🕸️ Квесты", callback_data="quest_menu")
     b.button(text="💰 Связанное с балансом", callback_data="balance_menu")
     b.button(text="🎮 Мини-игры", callback_data="games_menu")
+    b.button(text="🎟️ Ввести промокод", callback_data="enter_promo")
     b.button(text="📊 Профиль", callback_data="show_profile")
     b.button(text="🏆 Зал славы", callback_data="show_top")
     b.button(text="🎁 Бонус", callback_data="daily_bonus")
@@ -356,6 +367,7 @@ def admin_kb() -> InlineKeyboardMarkup:
     b.button(text="🪄 Начислить всем", callback_data="admin_give_all")
     b.button(text="🪓 Отобрать у всех", callback_data="admin_take_all")
     b.button(text="🎁 Подарки", callback_data="admin_gift_all")
+    b.button(text="🎟️ Создать промокод", callback_data="admin_create_promo") # НОВАЯ
     b.button(text="👥 Всего юзеров", callback_data="admin_users_count")
     b.button(text="👤 Профиль игрока", callback_data="admin_check_profile")
     b.button(text="👁 Баланс юзера", callback_data="admin_check_bal")
@@ -416,6 +428,56 @@ async def show_support(cb: types.CallbackQuery):
     await cb.message.edit_text("🆘 Поддержка:\n👻 @sardelka\n👾 @mehura", reply_markup=support_kb())
     await cb.answer()
 
+# --- ПРОМОКОДЫ (ВВОД) ---
+@dp.message(Command("promo"))
+async def cmd_promo(message: types.Message, state: FSMContext):
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        return await message.answer("❌ Использование: `/promo КОД`", parse_mode="Markdown")
+    code = args[1].strip().upper()
+    await process_promo_code(message.from_user.id, code, message, state)
+
+@dp.callback_query(F.data == "enter_promo")
+async def enter_promo_cb(cb: types.CallbackQuery, state: FSMContext):
+    await state.set_state(PromoEnter.code)
+    admin = await is_admin_db(cb.from_user.id)
+    await cb.message.edit_text("🎟️ Введи промокод:", reply_markup=cancel_kb("back_to_main"))
+    await cb.answer()
+
+@dp.message(PromoEnter.code)
+async def enter_promo_input(message: types.Message, state: FSMContext):
+    code = message.text.strip().upper()
+    await process_promo_code(message.from_user.id, code, message, state)
+
+async def process_promo_code(user_id: int, code: str, message: types.Message, state: FSMContext):
+    async with db_pool.acquire() as conn:
+        promo = await conn.fetchrow("SELECT reward, limit_uses, current_uses FROM promocodes WHERE code = $1", code)
+        
+        if not promo:
+            await state.clear()
+            return await message.answer("❌ Такого промокода не существует.")
+            
+        if promo['current_uses'] >= promo['limit_uses']:
+            await state.clear()
+            return await message.answer("❌ Этот промокод уже исчерпан.")
+            
+        # Проверяем, не использовал ли он уже
+        used = await conn.fetchrow("SELECT 1 FROM user_promo_uses WHERE user_id = $1 AND code = $2", user_id, code)
+        if used:
+            await state.clear()
+            return await message.answer("❌ Ты уже использовал этот промокод.")
+            
+        # Выдаем награду и записываем использование
+        reward = promo['reward']
+        await conn.execute("UPDATE promocodes SET current_uses = current_uses + 1 WHERE code = $1", code)
+        await conn.execute("INSERT INTO user_promo_uses (user_id, code) VALUES ($1, $2)", user_id, code)
+        
+    new_bal = await update_balance(user_id, "", reward)
+    await state.clear()
+    
+    await message.answer(f"🎉 Промокод активирован!\n+{reward} 🎃\nТвой баланс: **{new_bal}**.", reply_markup=main_menu_kb(await is_admin_db(user_id)), parse_mode="Markdown")
+
+# --- КВЕСТЫ ---
 @dp.callback_query(F.data == "balance_menu")
 async def show_balance_menu(cb: types.CallbackQuery):
     await cb.message.edit_text("💰 **Всё о тыквах:**", reply_markup=balance_menu_kb(), parse_mode="Markdown")
@@ -971,11 +1033,26 @@ async def handle_quest(cb: types.CallbackQuery):
 async def proof_sent(cb: types.CallbackQuery):
     qk = cb.data.replace("proof_sent_", "")
     q = QUEST_POOL.get(qk)
-    await save_proof(cb.from_user.id, q["name"])
+    if not q: return await cb.answer("Ошибка.", show_alert=True)
+    
+    user_id = cb.from_user.id
+    
     async with db_pool.acquire() as conn:
-        await conn.execute("INSERT INTO user_quest_completions (user_id, quest_id) VALUES ($1, $2)", cb.from_user.id, qk)
-    await cb.message.edit_text("✅ Заявка отправлена на проверку!")
-    await cb.answer()
+        existing = await conn.fetchrow("SELECT 1 FROM quest_proofs WHERE user_id = $1 AND quest_name = $2 AND status = 'pending'", user_id, q["name"])
+        if existing:
+            return await cb.answer("Ты уже отправил эту заявку на проверку. Жди ответа мастера.", show_alert=True)
+            
+        last_rot = await conn.fetchval("SELECT value FROM settings WHERE key = 'last_rotation'")
+        completed = await conn.fetchrow("SELECT 1 FROM user_quest_completions WHERE user_id = $1 AND quest_id = $2 AND completed_at > $3", user_id, qk, last_rot)
+        if completed:
+            return await cb.answer("Ты уже выполнил этот квест! Жди обновления.", show_alert=True)
+    
+    await save_proof(user_id, q["name"])
+    async with db_pool.acquire() as conn:
+        await conn.execute("INSERT INTO user_quest_completions (user_id, quest_id) VALUES ($1, $2)", user_id, qk)
+        
+    await cb.message.edit_text("✅ Заявка отправлена на проверку! Ожидай решения мастера.", reply_markup=games_menu_kb())
+    await cb.answer("Отправлено!")
 
 @dp.callback_query(F.data == "admin_panel")
 async def admin_panel(cb: types.CallbackQuery):
@@ -994,7 +1071,53 @@ async def admin_users_count(cb: types.CallbackQuery):
     )
     await cb.answer()
 
-# --- УЛУЧШЕННЫЕ ЗАЯВКИ ---
+# --- АДМИН: СОЗДАНИЕ ПРОМОКОДА ---
+@dp.callback_query(F.data == "admin_create_promo")
+async def admin_create_promo_start(cb: types.CallbackQuery, state: FSMContext):
+    if not await is_admin_db(cb.from_user.id): return await cb.answer("Нет.", show_alert=True)
+    await state.set_state(PromoCreate.name)
+    await cb.message.edit_text("🎟️ Введи название промокода (например, HALLOWEEN):", reply_markup=cancel_kb())
+    await cb.answer()
+
+@dp.message(PromoCreate.name)
+async def promo_create_name(message: types.Message, state: FSMContext):
+    name = message.text.strip().upper()
+    await state.update_data(promo_name=name)
+    await state.set_state(PromoCreate.reward)
+    await message.answer(f"Сколько тыкв будет давать промокод `{name}`? (Введи число):", parse_mode="Markdown", reply_markup=cancel_kb())
+
+@dp.message(PromoCreate.reward)
+async def promo_create_reward(message: types.Message, state: FSMContext):
+    try: r = int(message.text.strip())
+    except: return await message.answer("❌ Введи число.")
+    if r <= 0: return await message.answer("❌ Больше 0.")
+    
+    await state.update_data(promo_reward=r)
+    await state.set_state(PromoCreate.limit)
+    await message.answer(f"Сколько раз можно использовать этот промокод? (Общий лимит):", reply_markup=cancel_kb())
+
+@dp.message(PromoCreate.limit)
+async def promo_create_limit(message: types.Message, state: FSMContext):
+    try: l = int(message.text.strip())
+    except: return await message.answer("❌ Введи число.")
+    if l <= 0: return await message.answer("❌ Больше 0.")
+    
+    data = await state.get_data()
+    name = data['promo_name']
+    reward = data['promo_reward']
+    await state.clear()
+    
+    async with db_pool.acquire() as conn:
+        # Проверяем, нет ли уже такого
+        existing = await conn.fetchrow("SELECT 1 FROM promocodes WHERE code = $1", name)
+        if existing:
+            return await message.answer(f"❌ Промокод `{name}` уже существует!", reply_markup=admin_kb(), parse_mode="Markdown")
+            
+        await conn.execute("INSERT INTO promocodes (code, reward, limit_uses) VALUES ($1, $2, $3)", name, reward, l)
+        
+    await message.answer(f"✅ Промокод `{name}` создан!\nНаграда: {reward} 🎃\nЛимит: {l} раз.", reply_markup=admin_kb(), parse_mode="Markdown")
+
+# --- АДМИН: ЗАЯВКИ ---
 @dp.callback_query(F.data == "admin_pending")
 async def admin_pending(cb: types.CallbackQuery):
     if not await is_admin_db(cb.from_user.id): return await cb.answer("Нет.", show_alert=True)
@@ -1003,7 +1126,6 @@ async def admin_pending(cb: types.CallbackQuery):
     if not rows:
         return await cb.message.edit_text("📜 Заявок в ожидании нет.", reply_markup=admin_kb())
 
-    # Отправляем каждую заявку отдельным сообщением с кнопками
     await cb.message.edit_text("📜 **Список активных заявок:**", reply_markup=admin_kb())
     for row in rows:
         pid, uid, qname, ts = row['id'], row['user_id'], row['quest_name'], row['created_at']
@@ -1331,28 +1453,6 @@ async def admin_cancel(cb: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await cb.message.edit_text("💀 Панель:", reply_markup=admin_kb())
     await cb.answer("Отменено")
-
-@dp.message(F.text.startswith("/approve "))
-async def cmd_approve(message: types.Message):
-    if not await is_admin_db(message.from_user.id): return
-    pid = int(message.text.split()[1])
-    async with db_pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT user_id, quest_name FROM quest_proofs WHERE id = $1", pid)
-        if not row: return await message.answer("Не найдено.")
-        reward = next((q["reward"] for q in QUEST_POOL.values() if q["name"] == row['quest_name']), 0)
-        await conn.execute("UPDATE quest_proofs SET status='approved' WHERE id=$1", pid)
-    await update_balance(row['user_id'], "", reward)
-    await message.answer(f"✅ Начислено {reward}.")
-    try: await bot.send_message(row['user_id'], f"Квест {row['quest_name']} подтвержден! +{reward} 🎃.")
-    except: pass
-
-@dp.message(F.text.startswith("/reject "))
-async def cmd_reject(message: types.Message):
-    if not await is_admin_db(message.from_user.id): return
-    pid = int(message.text.split()[1])
-    async with db_pool.acquire() as conn:
-        await conn.execute("UPDATE quest_proofs SET status='rejected' WHERE id=$1", pid)
-    await message.answer("Заявка отклонена.")
 
 # --- СЕРВЕР ---
 async def healthcheck(request): return web.Response(text="OK")
