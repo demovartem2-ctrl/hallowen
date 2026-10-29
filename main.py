@@ -148,7 +148,7 @@ async def get_top(limit: int = 10):
     async with db_pool.acquire() as conn:
         return await conn.fetch("SELECT user_id, username, balance FROM users WHERE balance > 0 ORDER BY balance DESC LIMIT $1", limit)
 
-async def get_pending(limit: int = 20):
+async def get_pending(limit: int = 10):
     async with db_pool.acquire() as conn:
         return await conn.fetch("SELECT id, user_id, quest_name, created_at FROM quest_proofs WHERE status='pending' ORDER BY id DESC LIMIT $1", limit)
 
@@ -357,7 +357,7 @@ def admin_kb() -> InlineKeyboardMarkup:
     b.button(text="🪓 Отобрать у всех", callback_data="admin_take_all")
     b.button(text="🎁 Подарки", callback_data="admin_gift_all")
     b.button(text="👥 Всего юзеров", callback_data="admin_users_count")
-    b.button(text="👤 Профиль игрока", callback_data="admin_check_profile") # НОВАЯ КНОПКА
+    b.button(text="👤 Профиль игрока", callback_data="admin_check_profile")
     b.button(text="👁 Баланс юзера", callback_data="admin_check_bal")
     b.button(text="📜 Заявки", callback_data="admin_pending")
     b.button(text="👑 Выдать админку", callback_data="admin_grant")
@@ -994,13 +994,77 @@ async def admin_users_count(cb: types.CallbackQuery):
     )
     await cb.answer()
 
+# --- УЛУЧШЕННЫЕ ЗАЯВКИ ---
 @dp.callback_query(F.data == "admin_pending")
 async def admin_pending(cb: types.CallbackQuery):
     if not await is_admin_db(cb.from_user.id): return await cb.answer("Нет.", show_alert=True)
-    rows = await get_pending(20)
-    text = "📜 **Заявки:**\n\n" + "\n".join([f"#{r['id']} · user={r['user_id']} · {r['quest_name']}" for r in rows]) if rows else "Нет заявок."
-    await cb.message.edit_text(text, reply_markup=admin_kb())
+    rows = await get_pending(10)
+    
+    if not rows:
+        return await cb.message.edit_text("📜 Заявок в ожидании нет.", reply_markup=admin_kb())
+
+    # Отправляем каждую заявку отдельным сообщением с кнопками
+    await cb.message.edit_text("📜 **Список активных заявок:**", reply_markup=admin_kb())
+    for row in rows:
+        pid, uid, qname, ts = row['id'], row['user_id'], row['quest_name'], row['created_at']
+        
+        text = f"📜 **Заявка #{pid}**\n👤 User ID: `{uid}`\n🎯 Квест: **{qname}**"
+        
+        builder = InlineKeyboardBuilder()
+        builder.button(text=f"✅ Выдать ({uid})", callback_data=f"admin_approve_{pid}")
+        builder.button(text="❌ Отклонить", callback_data=f"admin_reject_{pid}")
+        builder.adjust(1)
+        
+        await bot.send_message(cb.from_user.id, text, reply_markup=builder.as_markup(), parse_mode="Markdown")
+        
     await cb.answer()
+
+@dp.callback_query(F.data.startswith("admin_approve_"))
+async def admin_approve_quest(cb: types.CallbackQuery):
+    if not await is_admin_db(cb.from_user.id): return await cb.answer("Нет.", show_alert=True)
+    pid = int(cb.data.replace("admin_approve_", ""))
+    
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT user_id, quest_name, status FROM quest_proofs WHERE id = $1", pid)
+        
+    if not row or row['status'] != 'pending':
+        return await cb.answer("Эта заявка уже обработана или удалена.", show_alert=True)
+        
+    uid, qname = row['user_id'], row['quest_name']
+    reward = next((q["reward"] for q in QUEST_POOL.values() if q["name"] == qname), 0)
+    
+    async with db_pool.acquire() as conn:
+        await conn.execute("DELETE FROM quest_proofs WHERE id = $1", pid)
+        
+    new_bal = await update_balance(uid, "", reward)
+    
+    await cb.message.edit_text(f"✅ Заявка #{pid} одобрена!\nНачислено {reward} 🎃 пользователю `{uid}`.")
+    await cb.answer("Выдано!")
+    
+    try: await bot.send_message(uid, f"🎉 Твой квест **{qname}** подтвержден!\n+{reward} 🎃\nТвой баланс: **{new_bal}**.", parse_mode="Markdown")
+    except: pass
+
+@dp.callback_query(F.data.startswith("admin_reject_"))
+async def admin_reject_quest(cb: types.CallbackQuery):
+    if not await is_admin_db(cb.from_user.id): return await cb.answer("Нет.", show_alert=True)
+    pid = int(cb.data.replace("admin_reject_", ""))
+    
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT user_id, quest_name, status FROM quest_proofs WHERE id = $1", pid)
+        
+    if not row or row['status'] != 'pending':
+        return await cb.answer("Эта заявка уже обработана или удалена.", show_alert=True)
+        
+    uid, qname = row['user_id'], row['quest_name']
+    
+    async with db_pool.acquire() as conn:
+        await conn.execute("DELETE FROM quest_proofs WHERE id = $1", pid)
+        
+    await cb.message.edit_text(f"❌ Заявка #{pid} отклонена.")
+    await cb.answer("Отклонено.")
+    
+    try: await bot.send_message(uid, f"❌ Твой квест **{qname}** отклонен.")
+    except: pass
 
 @dp.callback_query(F.data == "admin_check_bal")
 async def admin_check_bal(cb: types.CallbackQuery, state: FSMContext):
