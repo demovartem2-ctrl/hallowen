@@ -66,7 +66,6 @@ async def update_balance(user_id: int, username: str, amount: int, is_spending: 
             new_bal = max(0, raw_new_bal)
             actual_change = new_bal - current_bal
             
-            # Защита от минуса в тратах (spent)
             current_spent = row['spent']
             new_spent = current_spent + (abs(actual_change) if is_spending and actual_change < 0 else 0)
             if new_spent < 0: new_spent = 0
@@ -87,25 +86,16 @@ async def admin_take_level(user_id: int, amount_to_subtract: int) -> int:
         
         current_spent = row['spent']
         new_spent = current_spent - amount_to_subtract
-        if new_spent < 0: new_spent = 0 # Не даем уйти в минус
+        if new_spent < 0: new_spent = 0
         
         await conn.execute("UPDATE users SET spent = $1 WHERE user_id = $2", new_spent, user_id)
         return new_spent
 
 def get_level_info(spent: int) -> tuple[int, str]:
-    """Возвращает уровень и титул на основе потраченных тыкв."""
     spent = spent or 0
     level = (spent // 500) + 1
     
-    # Титулы (индекс = уровень - 1)
-    titles = [
-        "🥚 Новичок",           # 1
-        "🎃 Любитель",          # 2
-        "🦇 Охотник",           # 3
-        "💀 Мастер",            # 4
-        "👑 Король Тьмы",       # 5
-        # 6-49 уровни будут просто "💀 Мастер"
-    ]
+    titles = ["🥚 Новичок", "🎃 Любитель", "🦇 Охотник", "💀 Мастер", "👑 Король Тьмы"]
     
     if level >= 50:
         title = "👑 Тёмный Лорд"
@@ -197,6 +187,8 @@ class AdminAmount(StatesGroup):
     amount = State()
 class AdminTakeLevel(StatesGroup):
     target_id = State()
+    amount = State()
+class AdminTakeLevelAll(StatesGroup):
     amount = State()
 class GrantAdmin(StatesGroup):
     target_id = State()
@@ -356,13 +348,13 @@ def admin_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text="🪄 Выдать", callback_data="admin_give")
     b.button(text="🪓 Отобрать", callback_data="admin_take")
-    b.button(text="🪓 Отобрать лвл", callback_data="admin_take_level") # НОВАЯ КНОПКА
+    b.button(text="🪓 Отобрать лвл", callback_data="admin_take_level")
+    b.button(text="🪓 Отобрать лвл у всех", callback_data="admin_take_level_all") # НОВАЯ
     b.button(text="🪄 Начислить всем", callback_data="admin_give_all")
     b.button(text="🪓 Отобрать у всех", callback_data="admin_take_all")
     b.button(text="🎁 Подарки", callback_data="admin_gift_all")
     b.button(text="👥 Всего юзеров", callback_data="admin_users_count")
     b.button(text="👁 Баланс юзера", callback_data="admin_check_bal")
-    # Убрал "Балансы всех"
     b.button(text="📜 Заявки", callback_data="admin_pending")
     b.button(text="👑 Выдать админку", callback_data="admin_grant")
     b.button(text="🔙 В меню", callback_data="back_to_main")
@@ -1105,6 +1097,29 @@ async def admin_take_level_amt(message: types.Message, state: FSMContext):
     await message.answer(f"✅ Готово. Опыт уменьшен. Новый уровень `{t}`: **{new_level}** (Потрачено: {new_spent})", reply_markup=admin_kb(), parse_mode="Markdown")
     try: await bot.send_message(t, f"Твой уровень был понижен! Теперь ты {new_level} уровня.")
     except: pass
+
+@dp.callback_query(F.data == "admin_take_level_all")
+async def admin_take_level_all_start(cb: types.CallbackQuery, state: FSMContext):
+    if not await is_admin_db(cb.from_user.id): return await cb.answer("Нет.", show_alert=True)
+    await state.set_state(AdminTakeLevelAll.amount)
+    await cb.message.edit_text("🪓 Сколько опыта отнять У ВСЕХ?", reply_markup=cancel_kb())
+    await cb.answer()
+
+@dp.message(AdminTakeLevelAll.amount)
+async def admin_take_level_all_input(message: types.Message, state: FSMContext):
+    try: a = abs(int(message.text.strip()))
+    except: return await message.answer("Число.")
+    if a == 0: return await message.answer("Больше 0.")
+    await state.clear()
+    
+    users = await get_all_users()
+    await message.answer(f"🚀 Списываю {a} опыта (уровней) у {len(users)} пользователей...")
+    
+    for u in users:
+        await admin_take_level(u, a)
+        await asyncio.sleep(0.05)
+        
+    await message.answer(f"✅ Готово! Успешно списано у {len(users)} пользователей.", reply_markup=admin_kb())
 
 @dp.callback_query(F.data == "admin_give_all")
 async def admin_give_all(cb: types.CallbackQuery, state: FSMContext):
