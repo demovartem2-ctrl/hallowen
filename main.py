@@ -53,6 +53,13 @@ async def init_db():
         for admin_id in DEFAULT_ADMINS:
             await conn.execute("INSERT INTO admins (user_id) VALUES ($1) ON CONFLICT DO NOTHING", admin_id)
 
+async def wipe_database():
+    async with db_pool.acquire() as conn:
+        await conn.execute("TRUNCATE TABLE users, quest_proofs, user_purchases, settings, user_quest_completions, user_bonuses, user_trickortreat, user_wheel RESTART IDENTITY CASCADE")
+        await conn.execute("TRUNCATE TABLE admins CASCADE")
+        for admin_id in DEFAULT_ADMINS:
+            await conn.execute("INSERT INTO admins (user_id) VALUES ($1)", admin_id)
+
 async def get_user_info(user_id: int):
     async with db_pool.acquire() as conn:
         return await conn.fetchrow("SELECT username, balance, spent, registered_at FROM users WHERE user_id = $1", user_id)
@@ -79,31 +86,25 @@ async def update_balance(user_id: int, username: str, amount: int, is_spending: 
             return new_bal
 
 async def admin_take_level(user_id: int, amount_to_subtract: int) -> int:
-    """Отнимает потраченные тыквы (уровни), защищая от минуса."""
     async with db_pool.acquire() as conn:
         row = await conn.fetchrow("SELECT spent FROM users WHERE user_id = $1", user_id)
         if not row: return 0
-        
         current_spent = row['spent']
         new_spent = current_spent - amount_to_subtract
         if new_spent < 0: new_spent = 0
-        
         await conn.execute("UPDATE users SET spent = $1 WHERE user_id = $2", new_spent, user_id)
         return new_spent
 
 def get_level_info(spent: int) -> tuple[int, str]:
     spent = spent or 0
     level = (spent // 500) + 1
-    
     titles = ["🥚 Новичок", "🎃 Любитель", "🦇 Охотник", "💀 Мастер", "👑 Король Тьмы"]
-    
     if level >= 50:
         title = "👑 Тёмный Лорд"
     elif level <= len(titles):
         title = titles[level - 1]
     else:
         title = "💀 Мастер"
-        
     return level, title
 
 def is_admin_check(user_id: int) -> bool:
@@ -198,6 +199,8 @@ class TransferPumpkins(StatesGroup):
     target = State()
     amount = State()
 class AdminViewBalance(StatesGroup):
+    target = State()
+class AdminViewProfile(StatesGroup):
     target = State()
 class RocketGame(StatesGroup):
     bet = State()
@@ -349,14 +352,16 @@ def admin_kb() -> InlineKeyboardMarkup:
     b.button(text="🪄 Выдать", callback_data="admin_give")
     b.button(text="🪓 Отобрать", callback_data="admin_take")
     b.button(text="🪓 Отобрать лвл", callback_data="admin_take_level")
-    b.button(text="🪓 Отобрать лвл у всех", callback_data="admin_take_level_all") # НОВАЯ
+    b.button(text="🪓 Отобрать лвл у всех", callback_data="admin_take_level_all")
     b.button(text="🪄 Начислить всем", callback_data="admin_give_all")
     b.button(text="🪓 Отобрать у всех", callback_data="admin_take_all")
     b.button(text="🎁 Подарки", callback_data="admin_gift_all")
     b.button(text="👥 Всего юзеров", callback_data="admin_users_count")
+    b.button(text="👤 Профиль игрока", callback_data="admin_check_profile") # НОВАЯ КНОПКА
     b.button(text="👁 Баланс юзера", callback_data="admin_check_bal")
     b.button(text="📜 Заявки", callback_data="admin_pending")
     b.button(text="👑 Выдать админку", callback_data="admin_grant")
+    b.button(text="💣 Снести БД", callback_data="admin_wipe_db")
     b.button(text="🔙 В меню", callback_data="back_to_main")
     b.adjust(1)
     return b.as_markup()
@@ -1012,6 +1017,39 @@ async def admin_check_bal_input(message: types.Message, state: FSMContext):
     info = await get_user_info(t)
     await message.answer(f"👁 Баланс `{t}`: **{info['balance'] if info else 0}** 🎃", reply_markup=admin_kb(), parse_mode="Markdown")
 
+# --- ПРОФИЛЬ ИГРОКА В АДМИНКЕ ---
+@dp.callback_query(F.data == "admin_check_profile")
+async def admin_check_profile_start(cb: types.CallbackQuery, state: FSMContext):
+    if not await is_admin_db(cb.from_user.id): return await cb.answer("Нет.", show_alert=True)
+    await state.set_state(AdminViewProfile.target)
+    await cb.message.edit_text("👤 Введи ID или @username игрока, чтобы посмотреть профиль:", reply_markup=cancel_kb())
+    await cb.answer()
+
+@dp.message(AdminViewProfile.target)
+async def admin_check_profile_input(message: types.Message, state: FSMContext):
+    t = await find_user_id(message.text)
+    if not t: return await message.answer("❌ Пользователь не найден.")
+    await state.clear()
+    
+    info = await get_user_info(t)
+    if not info:
+        return await message.answer("❌ Профиль не найден в базе.")
+        
+    uname, bal, spent, reg = info['username'], info['balance'], info['spent'], info['registered_at']
+    level, title = get_level_info(spent)
+    reg_str = reg.strftime("%d.%m.%Y") if reg else "Неизвестно"
+    
+    text = (
+        f"📊 **Профиль игрока**\n\n"
+        f"👤 @{uname or 'скрыт'}\n"
+        f"🆔 `{t}`\n"
+        f"📅 С нами с: {reg_str}\n\n"
+        f"🎃 Баланс: **{bal}**\n"
+        f"💸 Потрачено: **{spent}**\n"
+        f"📈 Уровень: **{level}** ({title})"
+    )
+    await message.answer(text, reply_markup=admin_kb(), parse_mode="Markdown")
+
 @dp.callback_query(F.data == "admin_grant")
 async def admin_grant(cb: types.CallbackQuery, state: FSMContext):
     if not await is_admin_db(cb.from_user.id): return await cb.answer("Нет.", show_alert=True)
@@ -1184,6 +1222,45 @@ async def send_gift(cb: types.CallbackQuery):
         except: f += 1
         await asyncio.sleep(0.5)
     await cb.message.answer(f"✅ Отправлено: {s}\nОшибок: {f}", reply_markup=admin_kb())
+
+@dp.callback_query(F.data == "admin_wipe_db")
+async def admin_wipe_db(cb: types.CallbackQuery, state: FSMContext):
+    if not await is_admin_db(cb.from_user.id): return await cb.answer("Нет.", show_alert=True)
+    
+    builder = InlineKeyboardBuilder()
+    builder.button(text="⚠️ ДА, СНЕСТИ ВСЁ ⚠️", callback_data="admin_wipe_db_confirm")
+    builder.button(text="❌ Отмена", callback_data="admin_cancel")
+    builder.adjust(1)
+    
+    await cb.message.edit_text(
+        "💣 **ВНИМАНИЕ!**\n\n"
+        "Ты собираешься **ПОЛНОСТЬЮ СНЕСТИ БАЗУ ДАННЫХ**.\n"
+        "Все пользователи, балансы, уровни, квесты и кулдауны будут удалены.\n\n"
+        "Ты уверен?",
+        reply_markup=builder.as_markup(),
+        parse_mode="Markdown"
+    )
+    await cb.answer()
+
+@dp.callback_query(F.data == "admin_wipe_db_confirm")
+async def admin_wipe_db_confirm(cb: types.CallbackQuery):
+    if not await is_admin_db(cb.from_user.id): return await cb.answer("Нет.", show_alert=True)
+    
+    await cb.message.edit_text("💣 **Уничтожаем базу...**")
+    
+    try:
+        await wipe_database()
+        await cb.message.edit_text(
+            "✅ **БАЗА ДАННЫХ УСПЕШНО СНЕСЕНА!**\n\n"
+            "Все пользователи, балансы и уровни удалены. Квесты будут сгенерированы заново.",
+            reply_markup=admin_kb(),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logging.error(f"Ошибка при сносе БД: {e}")
+        await cb.message.edit_text(f"❌ Ошибка при сносе БД: {e}", reply_markup=admin_kb())
+        
+    await cb.answer()
 
 @dp.callback_query(F.data == "admin_cancel")
 async def admin_cancel(cb: types.CallbackQuery, state: FSMContext):
