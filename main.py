@@ -8,7 +8,7 @@ from typing import Optional
 
 import asyncpg
 from aiogram import Bot, Dispatcher, F, types
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command # <--- ДОБАВИЛ COMMAND
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -49,8 +49,6 @@ async def init_db():
         await conn.execute("CREATE TABLE IF NOT EXISTS user_bonuses (user_id BIGINT PRIMARY KEY, last_claim TIMESTAMP, streak INTEGER DEFAULT 0)")
         await conn.execute("CREATE TABLE IF NOT EXISTS user_trickortreat (user_id BIGINT PRIMARY KEY, last_played TIMESTAMP)")
         await conn.execute("CREATE TABLE IF NOT EXISTS user_wheel (user_id BIGINT PRIMARY KEY, last_played TIMESTAMP)")
-        
-        # Таблицы для промокодов
         await conn.execute("CREATE TABLE IF NOT EXISTS promocodes (code TEXT PRIMARY KEY, reward BIGINT, limit_uses INTEGER, current_uses INTEGER DEFAULT 0)")
         await conn.execute("CREATE TABLE IF NOT EXISTS user_promo_uses (user_id BIGINT, code TEXT, PRIMARY KEY (user_id, code))")
         
@@ -367,7 +365,7 @@ def admin_kb() -> InlineKeyboardMarkup:
     b.button(text="🪄 Начислить всем", callback_data="admin_give_all")
     b.button(text="🪓 Отобрать у всех", callback_data="admin_take_all")
     b.button(text="🎁 Подарки", callback_data="admin_gift_all")
-    b.button(text="🎟️ Создать промокод", callback_data="admin_create_promo") # НОВАЯ
+    b.button(text="🎟️ Создать промокод", callback_data="admin_create_promo")
     b.button(text="👥 Всего юзеров", callback_data="admin_users_count")
     b.button(text="👤 Профиль игрока", callback_data="admin_check_profile")
     b.button(text="👁 Баланс юзера", callback_data="admin_check_bal")
@@ -461,13 +459,11 @@ async def process_promo_code(user_id: int, code: str, message: types.Message, st
             await state.clear()
             return await message.answer("❌ Этот промокод уже исчерпан.")
             
-        # Проверяем, не использовал ли он уже
         used = await conn.fetchrow("SELECT 1 FROM user_promo_uses WHERE user_id = $1 AND code = $2", user_id, code)
         if used:
             await state.clear()
             return await message.answer("❌ Ты уже использовал этот промокод.")
             
-        # Выдаем награду и записываем использование
         reward = promo['reward']
         await conn.execute("UPDATE promocodes SET current_uses = current_uses + 1 WHERE code = $1", code)
         await conn.execute("INSERT INTO user_promo_uses (user_id, code) VALUES ($1, $2)", user_id, code)
@@ -1108,7 +1104,6 @@ async def promo_create_limit(message: types.Message, state: FSMContext):
     await state.clear()
     
     async with db_pool.acquire() as conn:
-        # Проверяем, нет ли уже такого
         existing = await conn.fetchrow("SELECT 1 FROM promocodes WHERE code = $1", name)
         if existing:
             return await message.answer(f"❌ Промокод `{name}` уже существует!", reply_markup=admin_kb(), parse_mode="Markdown")
