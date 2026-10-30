@@ -552,7 +552,7 @@ async def mines_cashout(cb: types.CallbackQuery):
     await cb.message.edit_text(f"💰 **Забрано!**\n\nМножитель: **x{mult:.2f}**\nВыигрыш: **{win}** 🎃\nБаланс: **{new_bal}**.", reply_markup=games_menu_kb(), parse_mode="Markdown")
     await cb.answer("Успел!")
 
-# --- КОЛЕСО / СЛАДОСТЬ / АПГРЕЙДЕР ---
+# --- КОЛЕСО / СЛАДОСТЬ / РАКЕТА / АПГРЕЙДЕР ---
 @dp.callback_query(F.data == "game_wheel")
 async def wheel(cb: types.CallbackQuery):
     user_id = cb.from_user.id
@@ -619,6 +619,8 @@ async def rocket_input(message: types.Message, state: FSMContext):
         bet = int(message.text.strip())
         if bet <= 0: raise ValueError
     except: return await message.answer("❌ Введи число > 0.")
+    info = await get_user_info(message.from_user.id)
+    if info['balance'] < bet: return await message.answer("❌ Недостаточно тыкв на балансе!")
     await state.clear()
     await start_rocket(message.from_user.id, bet, message)
 
@@ -894,10 +896,7 @@ async def admin_broadcast_confirm(cb: types.CallbackQuery, state: FSMContext):
         await asyncio.sleep(0.05)
     await bot.send_message(
         cb.from_user.id,
-        f"✅ **Рассылка завершена**\n\n"
-        f"📨 Доставлено: **{ok}**\n"
-        f"🚫 Заблокировали: **{blocked}**\n"
-        f"⚠️ Ошибок: **{failed}**",
+        f"✅ **Рассылка завершена**\n\n📨 Доставлено: **{ok}**\n🚫 Заблокировали: **{blocked}**\n⚠️ Ошибок: **{failed}**",
         reply_markup=admin_kb(), parse_mode="Markdown"
     )
 
@@ -1067,9 +1066,19 @@ async def admin_amt_input(message: types.Message, state: FSMContext):
     d = await state.get_data()
     await state.clear()
     final = a if d["action"] == "give" else -a
+    # Чтобы написать реально списанную сумму, нам нужно знать баланс ДО транзакции
+    old_info = await get_user_info(d["target"])
+    old_bal = old_info['balance'] if old_info else 0
+    
     new = await update_balance(d["target"], "", final)
+    
+    actual_change = new - old_bal
     await message.answer(f"✅ Готово. Баланс: {new} 🎃", reply_markup=admin_kb())
-    try: await bot.send_message(d["target"], f"Баланс изменен на {final} 🎃.")
+    try: 
+        if actual_change > 0:
+            await bot.send_message(d["target"], f"🎁 Твой баланс пополнен на {actual_change} 🎃.")
+        elif actual_change < 0:
+            await bot.send_message(d["target"], f"🪓 С твоего баланса списано {-actual_change} 🎃.")
     except: pass
 
 @dp.callback_query(F.data == "admin_take_level")
@@ -1157,9 +1166,15 @@ async def admin_take_all_input(message: types.Message, state: FSMContext):
     users = await get_all_users()
     await message.answer(f"🚀 Списание {a} у {len(users)}...")
     for u in users:
-        await update_balance(u, "", -a, is_spending=True)
-        try: await bot.send_message(u, f"🪓 Гнев Мастера! -{a} 🎃")
-        except: pass
+        # Фикс уведомления о реально списанной сумме
+        info = await get_user_info(u)
+        if info and info['balance'] > 0:
+            actual = min(info['balance'], a)
+            await update_balance(u, "", -a, is_spending=True)
+            try: await bot.send_message(u, f"🪓 Гнев Мастера! -{actual} 🎃")
+            except: pass
+        else:
+            await update_balance(u, "", -a, is_spending=True)
         await asyncio.sleep(0.05)
     await message.answer("✅ Готово!", reply_markup=admin_kb())
 
