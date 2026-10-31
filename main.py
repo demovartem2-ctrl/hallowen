@@ -28,7 +28,14 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 ADMIN_USERNAME = "sardelka"
 DEFAULT_ADMINS = {1780243203, 1780243210}
-GIFT_IDS = ["9000000000000159", "9000000000000158", "9000000000000153", "9000000000000152", "9000000000000148"]
+
+# ОБНОВЛЕННЫЙ СПИСОК ПОДАРКОВ (добавлены новые)
+GIFT_IDS = [
+    "9000000000000152", "9000000000000153", "9000000000000154", 
+    "9000000000000155", "9000000000000156", "9000000000000157", 
+    "9000000000000158", "9000000000000159", "9000000000000160", 
+    "9000000000000200"
+]
 
 db_pool: asyncpg.Pool = None
 active_games = {}
@@ -36,7 +43,6 @@ active_games = {}
 # --- БАЗА ДАННЫХ ---
 async def init_db():
     global db_pool
-    # Фикс для Render: используем стандартный ssl='require' вместо самопального контекста
     db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5, ssl='require')
     async with db_pool.acquire() as c:
         await c.execute("""CREATE TABLE IF NOT EXISTS users (
@@ -1001,8 +1007,7 @@ async def admin_users_count(cb: types.CallbackQuery):
     count = await get_total_users_count()
     await safe_edit(cb.message, f"👥 **Статистика**\n\nВсего пользователей: **{count}**", admin_kb())
     await cb.answer()
-
-# ---------- РАССЫЛКА ----------
+    # ---------- РАССЫЛКА ----------
 @dp.callback_query(F.data == "admin_broadcast")
 async def admin_broadcast_start(cb: types.CallbackQuery, state: FSMContext):
     if not await is_admin_db(cb.from_user.id): 
@@ -1399,14 +1404,17 @@ async def send_gift(cb: types.CallbackQuery):
     users = await get_all_users()
     await safe_edit(cb.message, f"🚀 Рассылка подарка для {len(users)}...")
     await cb.answer()
+    
     s = f = 0
     for u in users:
         try:
             await bot.send_gift(user_id=u, gift_id=gid)
             s += 1
-        except: 
+        except Exception as e:
+            log.warning(f"Не удалось отправить подарок {u}: {e}")
             f += 1
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.3)
+        
     await bot.send_message(cb.from_user.id, f"✅ Отправлено: {s}\nОшибок: {f}", reply_markup=admin_kb())
 
 # ---------- АДМИН: WIPE ----------
