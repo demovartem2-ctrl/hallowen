@@ -276,8 +276,8 @@ def rocket_cashout_kb() -> InlineKeyboardMarkup:
 
 def upgrader_choice_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="⚡ Быстро (25%, x2.2)", callback_data="upgrade_fast")
-    b.button(text="🐢 Медленно (45%, x1.6)", callback_data="upgrade_slow")
+    b.button(text="⚡ Быстро (25%, x2.0)", callback_data="upgrade_fast")
+    b.button(text="🐢 Медленно (45%, x1.5)", callback_data="upgrade_slow")
     b.button(text="🔙 Назад", callback_data="games_menu")
     b.adjust(1)
     return b.as_markup()
@@ -300,8 +300,9 @@ def shop_kb(user_id: int) -> InlineKeyboardMarkup:
 
 def buy_stars_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    for t, c in [("100 🎃 (1000 ⭐)","buy_stars_100"),("250 🎃 (2500 ⭐)","buy_stars_250"),
-                 ("500 🎃 (5000 ⭐)","buy_stars_500"),("✍️ Своя","buy_stars_custom"),
+    # 1 тыква = 20 звезд
+    for t, c in [("100 🎃 (2000 ⭐)","buy_stars_100"),("250 🎃 (5000 ⭐)","buy_stars_250"),
+                 ("500 🎃 (10000 ⭐)","buy_stars_500"),("✍️ Своя сумма","buy_stars_custom"),
                  ("🔙 Назад","balance_menu")]:
         b.button(text=t, callback_data=c)
     b.adjust(1)
@@ -777,7 +778,7 @@ async def rocket_cashout(cb: types.CallbackQuery):
         games_menu_kb())
     await cb.answer("Успел!")
 
-# ---------- АПГРЕЙДЕР ----------
+# ---------- АПГРЕЙДЕР (ФИКС) ----------
 @dp.callback_query(F.data == "game_upgrader")
 async def upgr_start(cb: types.CallbackQuery, state: FSMContext):
     await state.set_state(Upgrader.amount)
@@ -803,16 +804,19 @@ async def _upgrader_finish(cb: types.CallbackQuery, state: FSMContext, chance: f
     await state.clear()
     if not bet:
         return await cb.answer("Устарело.", show_alert=True)
+    
     await update_balance(cb.from_user.id, None, -bet, is_spending=True)
 
     if random.random() < chance:
-        win = int(bet * mult_coef)
-        new_bal = await update_balance(cb.from_user.id, None, win)
-        profit = win - bet
-        text = f"🎉 Выигрыш: **+{profit}** 🎃 (x{mult_coef})\nБаланс: **{new_bal}**."
+        win_amount = int(bet * mult_coef) 
+        new_bal = await update_balance(cb.from_user.id, None, win_amount)
+        text = (f"🎉 **ПОБЕДА!**\n"
+                f"Коэффициент: **x{mult_coef}**\n"
+                f"На баланс зачислено: **+{win_amount}** 🎃\n"
+                f"Текущий баланс: **{new_bal}**.")
     else:
         info = await get_user_info(cb.from_user.id)
-        text = f"💀 Проигрыш: **-{bet}** 🎃\nБаланс: **{info['balance'] if info else 0}**."
+        text = f"💀 **Проигрыш!**\nПотеряно: **-{bet}** 🎃\nБаланс: **{info['balance'] if info else 0}**."
 
     b = InlineKeyboardBuilder()
     b.button(text="🔄 Ещё", callback_data="game_upgrader")
@@ -823,11 +827,11 @@ async def _upgrader_finish(cb: types.CallbackQuery, state: FSMContext, chance: f
 
 @dp.callback_query(F.data == "upgrade_fast")
 async def upgr_fast(cb: types.CallbackQuery, state: FSMContext):
-    await _upgrader_finish(cb, state, 0.25, 2.2)
+    await _upgrader_finish(cb, state, 0.25, 2.0)
 
 @dp.callback_query(F.data == "upgrade_slow")
 async def upgr_slow(cb: types.CallbackQuery, state: FSMContext):
-    await _upgrader_finish(cb, state, 0.45, 1.6)
+    await _upgrader_finish(cb, state, 0.45, 1.5)
 
 # ---------- ПЕРЕВОДЫ ----------
 @dp.callback_query(F.data == "transfer_start")
@@ -910,16 +914,16 @@ async def buy_item(cb: types.CallbackQuery):
     await notify_admins(f"🛒 {cb.from_user.id} купил {item['name']} за {item['price']} 🎃")
     await cb.answer("Куплено!")
 
-# ---------- STARS ----------
+# ---------- STARS (1 ТЫКВА = 20 ЗВЕЗД) ----------
 @dp.callback_query(F.data == "buy_stars_menu")
 async def buy_stars_menu(cb: types.CallbackQuery):
-    await safe_edit(cb.message, "💎 **Звезды** (1🎃=10⭐)\nМин: 100🎃", buy_stars_kb())
+    await safe_edit(cb.message, "💎 **Звезды** (1🎃 = 20⭐)\nМин: 100🎃", buy_stars_kb())
     await cb.answer()
 
 @dp.callback_query(F.data == "buy_stars_custom")
 async def buy_stars_custom(cb: types.CallbackQuery, state: FSMContext):
     await state.set_state(BuyStars.custom_amount)
-    await safe_edit(cb.message, "✍️ Введи кол-во тыкв (100–10000):", cancel_kb("balance_menu"))
+    await safe_edit(cb.message, "✍️ Введи кол-во тыкв (мин 100):", cancel_kb("balance_menu"))
     await cb.answer()
 
 @dp.message(BuyStars.custom_amount)
@@ -928,11 +932,11 @@ async def buy_stars_amt(message: types.Message, state: FSMContext):
         p = int(message.text.strip())
     except:
         return await message.answer("Число.")
-    if p < 100 or p > 10000:
-        return await message.answer("Мин 100, макс 10000.")
+    if p < 100:
+        return await message.answer("Мин 100.")
     await state.clear()
     await message.answer_invoice(title="Тыквы", description=f"{p} тыкв",
-        prices=[LabeledPrice(label="XTR", amount=p*10)],
+        prices=[LabeledPrice(label="XTR", amount=p*20)],
         provider_token="", currency="XTR", payload=f"stars_{p}")
 
 @dp.callback_query(F.data.startswith("buy_stars_"))
@@ -944,7 +948,7 @@ async def buy_stars_preset(cb: types.CallbackQuery):
     except ValueError:
         return await cb.answer("Ошибка.", show_alert=True)
     await cb.message.answer_invoice(title="Тыквы", description=f"{p} тыкв",
-        prices=[LabeledPrice(label="XTR", amount=p*10)],
+        prices=[LabeledPrice(label="XTR", amount=p*20)],
         provider_token="", currency="XTR", payload=f"stars_{p}")
     await cb.answer()
 
@@ -1058,7 +1062,6 @@ async def admin_broadcast_confirm(cb: types.CallbackQuery, state: FSMContext):
     for uid in users:
         sent = False
 
-        # Попытка 1: с Markdown
         try:
             await bot.send_message(uid, text, parse_mode="Markdown")
             ok += 1
@@ -1071,7 +1074,6 @@ async def admin_broadcast_confirm(cb: types.CallbackQuery, state: FSMContext):
             else:
                 errors.append(f"{uid}: {e}")
 
-        # Попытка 2: без разметки
         if not sent:
             try:
                 await bot.send_message(uid, text)
@@ -1525,3 +1527,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+        
