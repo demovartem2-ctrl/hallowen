@@ -194,7 +194,7 @@ class Broadcast(StatesGroup): text = State(); confirm = State()
 # --- МАГАЗИН (ЦЕНЫ −37.5%) ---
 SHOP_ITEMS = {
     "item_3blacks":  {"name": "3 блека",    "price": 1000, "limit": 2, "emoji": "🖤"},
-    "item_nft_user": {"name": "Нфт юз",     "price": 1188, "limit": 1, "emoji": "🖼️"},
+    "item_nft_user": {"name": "Нфт юз",     "price": 1150, "limit": 1, "emoji": "🖼️"},
     "item_nft_num":  {"name": "Номер Nft",  "price": 1375, "limit": 1, "emoji": "🔢🖼️"},
     "item_scam":     {"name": "Scam метка", "price": 1875, "limit": 1, "emoji": "⚠️"},
 }
