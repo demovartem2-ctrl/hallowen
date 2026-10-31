@@ -2,7 +2,6 @@ import asyncio
 import logging
 import os
 import random
-import ssl
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -192,12 +191,12 @@ class PromoCreate(StatesGroup): name = State(); reward = State(); limit = State(
 class PromoEnter(StatesGroup): code = State()
 class Broadcast(StatesGroup): text = State(); confirm = State()
 
-# --- МАГАЗИН (ЦЕНЫ ПОДНЯТЫ) ---
+# --- МАГАЗИН (ЦЕНЫ −37.5%) ---
 SHOP_ITEMS = {
-    "item_3blacks":  {"name": "3 блека",    "price": 1600, "limit": 2, "emoji": "🖤"},
-    "item_nft_user": {"name": "Нфт юз",     "price": 1900, "limit": 1, "emoji": "🖼️"},
-    "item_nft_num":  {"name": "Номер Nft",  "price": 2200, "limit": 1, "emoji": "🔢🖼️"},
-    "item_scam":     {"name": "Scam метка", "price": 3000, "limit": 1, "emoji": "⚠️"},
+    "item_3blacks":  {"name": "3 блека",    "price": 1000, "limit": 2, "emoji": "🖤"},
+    "item_nft_user": {"name": "Нфт юз",     "price": 1188, "limit": 1, "emoji": "🖼️"},
+    "item_nft_num":  {"name": "Номер Nft",  "price": 1375, "limit": 1, "emoji": "🔢🖼️"},
+    "item_scam":     {"name": "Scam метка", "price": 1875, "limit": 1, "emoji": "⚠️"},
 }
 
 # --- ХЕЛПЕР БЕЗОПАСНОГО РЕДАКТИРОВАНИЯ ---
@@ -366,7 +365,6 @@ if not DATABASE_URL: raise RuntimeError("DATABASE_URL не задан")
 session = AiohttpSession(api=TelegramAPIServer.from_base(API_BASE))
 bot = Bot(token=TOKEN, session=session)
 dp = Dispatcher(storage=MemoryStorage())
-
 # ---------- СТАРТ / НАВИГАЦИЯ ----------
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
@@ -878,8 +876,7 @@ async def transfer_amount(message: types.Message, state: FSMContext):
         await bot.send_message(target, f"🎁 Тебе перевели **{amt}** 🎃!", parse_mode="Markdown")
     except:
         pass
-
-# ---------- МАГАЗИН ----------
+        # ---------- МАГАЗИН ----------
 @dp.callback_query(F.data == "shop_menu")
 async def show_shop(cb: types.CallbackQuery):
     await safe_edit(cb.message, "🛒 **Магазин**\n\nЦены обновлены 🎃", shop_kb(cb.from_user.id))
@@ -1025,7 +1022,7 @@ async def admin_users_count(cb: types.CallbackQuery):
     await safe_edit(cb.message, f"👥 **Статистика**\n\nВсего пользователей: **{count}**", admin_kb())
     await cb.answer()
 
-# ---------- РАССЫЛКА ----------
+# ---------- РАССЫЛКА (ФИКС) ----------
 @dp.callback_query(F.data == "admin_broadcast")
 async def admin_broadcast_start(cb: types.CallbackQuery, state: FSMContext):
     if not await is_admin_db(cb.from_user.id):
@@ -1036,7 +1033,7 @@ async def admin_broadcast_start(cb: types.CallbackQuery, state: FSMContext):
 
 @dp.message(Broadcast.text)
 async def admin_broadcast_text(message: types.Message, state: FSMContext):
-    await state.update_data(bc_text=message.text, bc_pm=message.parse_mode)
+    await state.update_data(bc_text=message.text)
     await state.set_state(Broadcast.confirm)
     await message.answer(f"📝 **Предпросмотр:**\n\n{message.text}\n\nОтправить всем?",
                          reply_markup=broadcast_confirm_kb(), parse_mode="Markdown")
@@ -1045,34 +1042,64 @@ async def admin_broadcast_text(message: types.Message, state: FSMContext):
 async def admin_broadcast_confirm(cb: types.CallbackQuery, state: FSMContext):
     if not await is_admin_db(cb.from_user.id):
         return await cb.answer("Нет.", show_alert=True)
+
     text = (await state.get_data()).get("bc_text")
     await state.clear()
     if not text:
         return await cb.answer("Текст потерян.", show_alert=True)
+
     users = await get_all_users()
     await safe_edit(cb.message, f"🚀 Рассылка на {len(users)} пользователей...")
     await cb.answer()
 
     ok = blocked = failed = 0
+    errors = []
+
     for uid in users:
+        sent = False
+
+        # Попытка 1: с Markdown
         try:
             await bot.send_message(uid, text, parse_mode="Markdown")
             ok += 1
+            sent = True
         except Exception as e:
             err = str(e).lower()
-            if any(x in err for x in ("blocked","chat not found","deactivated")):
+            if any(x in err for x in ("blocked", "chat not found", "deactivated", "user is deactivated")):
                 blocked += 1
+                sent = True
             else:
-                try:
-                    await bot.send_message(uid, text)
-                    ok += 1
-                except:
-                    failed += 1
+                errors.append(f"{uid}: {e}")
+
+        # Попытка 2: без разметки
+        if not sent:
+            try:
+                await bot.send_message(uid, text)
+                ok += 1
+            except Exception as e2:
+                failed += 1
+                errors.append(f"{uid} (fallback): {e2}")
+
         await asyncio.sleep(0.05)
 
-    await bot.send_message(cb.from_user.id,
-        f"✅ **Рассылка завершена**\n\n📨 Доставлено: **{ok}**\n🚫 Заблокировали: **{blocked}**\n⚠️ Ошибок: **{failed}**",
-        reply_markup=admin_kb(), parse_mode="Markdown")
+    err_preview = "\n".join(errors[:5]) if errors else "—"
+    try:
+        await bot.send_message(
+            cb.from_user.id,
+            f"✅ **Рассылка завершена**\n\n"
+            f"📨 Доставлено: **{ok}**\n"
+            f"🚫 Заблокировали: **{blocked}**\n"
+            f"⚠️ Ошибок: **{failed}**\n\n"
+            f"**Первые ошибки:**\n`{err_preview}`",
+            reply_markup=admin_kb(), parse_mode="Markdown"
+        )
+    except Exception:
+        await bot.send_message(
+            cb.from_user.id,
+            f"Рассылка завершена.\nДоставлено: {ok}\nЗаблокировали: {blocked}\nОшибок: {failed}\n\n"
+            f"Первые ошибки:\n{err_preview}",
+            reply_markup=admin_kb()
+        )
 
 # ---------- СОЗДАНИЕ ПРОМО ----------
 @dp.callback_query(F.data == "admin_create_promo")
@@ -1143,19 +1170,14 @@ async def admin_approve(cb: types.CallbackQuery):
         row = await c.fetchrow("SELECT user_id,quest_id,quest_name,status FROM quest_proofs WHERE id=$1", pid)
     if not row or row['status'] != 'pending':
         return await cb.answer("Обработана.", show_alert=True)
-
-    # Фикс: reward ищем по quest_id, а не по имени
     quest_id = row['quest_id']
     reward = QUEST_POOL.get(quest_id, {}).get("reward", 0)
     if not reward:
-        # fallback по имени, если quest_id пустой
         reward = next((q["reward"] for q in QUEST_POOL.values() if q["name"] == row['quest_name']), 0)
-
     async with db_pool.acquire() as c:
         await c.execute("DELETE FROM quest_proofs WHERE id=$1", pid)
         await c.execute("INSERT INTO user_quest_completions (user_id,quest_id) VALUES ($1,$2)",
                         row['user_id'], quest_id)
-
     new_bal = await update_balance(row['user_id'], None, reward)
     await safe_edit(cb.message, f"✅ Выдано {reward} 🎃 пользователю `{row['user_id']}`.")
     await cb.answer("Готово!")
@@ -1408,7 +1430,6 @@ async def admin_take_all_input(message: types.Message, state: FSMContext):
         info = await get_user_info(u)
         actual = min(info['balance'], a) if info else 0
         if actual > 0:
-            # Фикс: списываем actual, а не a
             await update_balance(u, None, -actual, is_spending=True)
             try:
                 await bot.send_message(u, f"🪓 Гнев Мастера! -{actual} 🎃")
